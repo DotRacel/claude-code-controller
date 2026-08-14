@@ -18,7 +18,7 @@
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import crypto from 'node:crypto';
 import { InspectorClient } from './ws-client.ts';
-import { getFreePort, waitForPort, DEFAULT_CLAUDE } from './attach.ts';
+import { getFreePort, waitForPort, treeKiller, DEFAULT_CLAUDE } from './attach.ts';
 import { MAIN_SCRIPT_URL, GATES, INTERACTIVE_GATES, fill, buildLocatorExpr, buildInteractiveLocatorExpr, buildChildLocatorExpr, childDhsRebind, type RebindConfig } from './anchors.ts';
 
 export interface GateRebindOpts extends RebindConfig {
@@ -136,13 +136,18 @@ export async function launchWithGatesRebound(opts: GateRebindOpts): Promise<Gate
   log(`[gate] spawn ${claudeBin} remote-control (wait=1) port=${port} cwd=${cwd}`);
   const child = spawn(claudeBin, ['remote-control', ...extraArgs], { cwd, env: env as NodeJS.ProcessEnv, stdio: ['pipe', 'pipe', 'pipe'] }) as ChildProcessWithoutNullStreams;
   let dead = false;
+  let spawnErr: Error | null = null;
+  // Without this listener a failed spawn (bad --claude-bin) throws an unhandled 'error' event.
+  child.on('error', (e) => { dead = true; spawnErr = e; log(`[gate] spawn error: ${e.message}`); });
   child.on('exit', (c) => { dead = true; log(`[gate] child exit code=${c}`); });
   child.stdout.on('data', (b) => onStdout?.(b.toString()));
   child.stderr.on('data', (b) => onStderr?.(b.toString()));
-  const kill = () => { if (!dead) { try { child.kill('SIGKILL'); } catch {} } };
+  // bridgeMain forks a WORKER claude as a grandchild; killing only `child` orphans it (~370MB
+  // each, retrying a dead --sdk-url forever). killTree is what actually reaps it.
+  const kill = treeKiller(child, () => dead);
 
   try {
-    await waitForPort(port, '127.0.0.1', timeoutMs, () => dead);
+    await waitForPort(port, '127.0.0.1', timeoutMs, () => dead).catch((e) => { throw spawnErr ?? e; });
     const ic = new InspectorClient();
     await ic.connect(wsUrl, { timeout: 8000 });
     log('[gate] connected (wait state)');
@@ -319,13 +324,16 @@ export async function launchInteractiveWithGatesRebound(opts: InteractiveLaunchO
   const stdioCfg: any = stdio === 'inherit' ? ['inherit', 'inherit', 'pipe'] : ['pipe', 'pipe', 'pipe'];
   const child = spawn(claudeBin, [...extraArgs], { cwd, env: env as NodeJS.ProcessEnv, stdio: stdioCfg });
   let dead = false;
+  let spawnErr: Error | null = null;
+  // Without this listener a failed spawn (bad --claude-bin) throws an unhandled 'error' event.
+  child.on('error', (e) => { dead = true; spawnErr = e; log(`[int] spawn error: ${e.message}`); });
   child.on('exit', (c) => { dead = true; log(`[int] child exit code=${c}`); });
   child.stderr?.on('data', (b) => onStderr?.(b.toString()));
   if (stdio === 'pipe') child.stdout?.on('data', (b) => onStdout?.(b.toString()));
   const kill = () => { if (!dead) { try { child.kill('SIGKILL'); } catch {} } };
 
   try {
-    await waitForPort(port, '127.0.0.1', timeoutMs, () => dead);
+    await waitForPort(port, '127.0.0.1', timeoutMs, () => dead).catch((e) => { throw spawnErr ?? e; });
     const ic = new InspectorClient();
     await ic.connect(wsUrl, { timeout: 8000 });
     log('[int] connected (wait state)');
