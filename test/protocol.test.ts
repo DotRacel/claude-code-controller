@@ -14,10 +14,10 @@ test('encodeWorkSecret round-trips into the v1 shape AVl() decodes', () => {
   assert.equal(decoded.api_base_url, 'http://127.0.0.1:9999');
 });
 
-test('pushSessionWork builds a valid session work item + session record', () => {
+test('pushSessionWork builds a valid session work item + session record', async () => {
   const store = new Store();
-  const env = store.createEnv({ credential: 'c1' });
-  const r = store.pushSessionWork(env.id, 'http://127.0.0.1:1');
+  const env = await store.createEnv({ credential: 'c1' });
+  const r = await store.pushSessionWork(env.id, 'http://127.0.0.1:1');
   assert.ok(r);
   assert.equal(r.work.data.type, 'session');
   assert.equal(r.work.data.id, r.session.id); // work targets the session
@@ -27,10 +27,10 @@ test('pushSessionWork builds a valid session work item + session record', () => 
   assert.equal(dec.api_base_url, 'http://127.0.0.1:1');
 });
 
-test('nextWork moves queue→inflight; second poll is empty; ack clears inflight', () => {
+test('nextWork moves queue→inflight; second poll is empty; ack clears inflight', async () => {
   const store = new Store();
-  const env = store.createEnv({ credential: 'c1' });
-  store.pushSessionWork(env.id, 'http://x');
+  const env = await store.createEnv({ credential: 'c1' });
+  await store.pushSessionWork(env.id, 'http://x');
   const w = store.nextWork(env.id);
   assert.ok(w);
   assert.equal(store.nextWork(env.id), null);
@@ -39,10 +39,10 @@ test('nextWork moves queue→inflight; second poll is empty; ack clears inflight
   assert.equal(env.inflight.size, 0);
 });
 
-test('sendToChild writes a well-formed client_event SSE frame', () => {
+test('sendToChild writes a well-formed client_event SSE frame', async () => {
   const store = new Store();
-  const env = store.createEnv({ credential: 'c1' });
-  const r = store.pushSessionWork(env.id, 'http://x')!;
+  const env = await store.createEnv({ credential: 'c1' });
+  const r = (await store.pushSessionWork(env.id, 'http://x'))!;
   const writes: string[] = [];
   store.attachSse(r.session.id, { write: (s: string) => writes.push(s) } as any);
 
@@ -61,17 +61,17 @@ test('sendToChild writes a well-formed client_event SSE frame', () => {
   assert.equal(envelope.payload.message.content, 'hi');
 });
 
-test('sendToChild returns false when no SSE stream is attached', () => {
+test('sendToChild returns false when no SSE stream is attached', async () => {
   const store = new Store();
-  const env = store.createEnv({ credential: 'c1' });
-  const r = store.pushSessionWork(env.id, 'http://x')!;
+  const env = await store.createEnv({ credential: 'c1' });
+  const r = (await store.pushSessionWork(env.id, 'http://x'))!;
   assert.equal(store.sendToChild(r.session.id, { type: 'user' }), false);
 });
 
-test('sequence_num / id increments per send', () => {
+test('sequence_num / id increments per send', async () => {
   const store = new Store();
-  const env = store.createEnv({ credential: 'c1' });
-  const r = store.pushSessionWork(env.id, 'http://x')!;
+  const env = await store.createEnv({ credential: 'c1' });
+  const r = (await store.pushSessionWork(env.id, 'http://x'))!;
   const writes: string[] = [];
   store.attachSse(r.session.id, { write: (s: string) => writes.push(s) } as any);
   store.sendToChild(r.session.id, {});
@@ -80,10 +80,10 @@ test('sequence_num / id increments per send', () => {
   assert.match(writes[1], /\nid: 2\n/);
 });
 
-test('detachSse stops delivery', () => {
+test('detachSse stops delivery', async () => {
   const store = new Store();
-  const env = store.createEnv({ credential: 'c1' });
-  const r = store.pushSessionWork(env.id, 'http://x')!;
+  const env = await store.createEnv({ credential: 'c1' });
+  const r = (await store.pushSessionWork(env.id, 'http://x'))!;
   const writes: string[] = [];
   store.attachSse(r.session.id, { write: (s: string) => writes.push(s) } as any);
   store.detachSse(r.session.id);
@@ -91,12 +91,12 @@ test('detachSse stops delivery', () => {
   assert.equal(writes.length, 0);
 });
 
-test('sessions are owned by their credential and looked up by ingress token', () => {
+test('sessions are owned by their credential and looked up by ingress token', async () => {
   const store = new Store();
-  const a = store.createEnv({ credential: 'A', machineName: 'ma', dir: '/a' });
-  const b = store.createEnv({ credential: 'B' });
-  const sa = store.pushSessionWork(a.id, 'http://x')!.session;
-  store.pushSessionWork(b.id, 'http://x');
+  const a = await store.createEnv({ credential: 'A', machineName: 'ma', dir: '/a' });
+  const b = await store.createEnv({ credential: 'B' });
+  const sa = (await store.pushSessionWork(a.id, 'http://x'))!.session;
+  await store.pushSessionWork(b.id, 'http://x');
   assert.equal(store.sessionsForCredential('A').length, 1);
   assert.equal(store.sessionsForCredential('B').length, 1);
   assert.equal(sa.credential, 'A');

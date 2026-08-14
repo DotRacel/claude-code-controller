@@ -1,0 +1,25 @@
+# Local dev + (later) deployment. Right now only the database: the server still runs on the
+# host via `npm run server`, so the port is published. When the `app` service lands, the two
+# talk over the compose network and `ports` here can go away.
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: ccc-pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ccc
+      POSTGRES_PASSWORD: ccc
+      POSTGRES_DB: ccc
+    ports:
+      - '127.0.0.1:5432:5432' # loopback only — never expose a dev DB on the LAN
+    volumes:
+      - ccc-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ccc -d ccc']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  ccc-pgdata:

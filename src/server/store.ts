@@ -1,10 +1,32 @@
 /**
- * store.ts — in-memory state for the controller server. Multi-tenant: every environment
- * and session is owned by a credential ("凭证A"); the web side lists/controls only its own.
- * Single-process, no persistence (yet).
+ * store.ts — server state. Multi-tenant: every environment and session is owned by a
+ * credential ("凭证A"); the web side lists/controls only its own.
+ *
+ * Single-instance design, so the split is:
+ *   - PG (db.ts) is the source of truth for environments / sessions / events.
+ *   - `envs` / `sessions` are an in-memory READ CACHE, loaded by load() on boot and written
+ *     through on every mutation. Read paths therefore stay SYNCHRONOUS and never touch the
+ *     database — `owns()` in web-channel.ts runs on every websocket frame.
+ *   - Only mutations are async. Runtime state (sse handles, seq, connection liveness, the work
+ *     queue) is memory-only by nature and never persisted.
+ *   - Events are not cached (a multi-user server can't hold every transcript); history is a
+ *     query. Without a pool they fall back to an in-memory ring, which is what the unit tests
+ *     and the local `src/cli.ts` driver use.
+ *
+ * `new Store()` = pure memory (no persistence). `new Store({ pool })` = write-through to PG.
  */
 import crypto from 'node:crypto';
+import os from 'node:os';
 import type { ServerResponse } from 'node:http';
+import {
+  type Pool, upsertEnv, upsertSession, insertEvents, selectHistory, flushActivity, loadRecent,
+} from './db.ts';
+
+/** Token-level deltas: high write volume, no replay value (the full `assistant` message
+ * carries the final text), so they are relayed live but never stored. */
+const UNSTORED_EVENT_TYPES = new Set(['stream_event']);
+const HISTORY_LIMIT = 3000;
+const ACTIVITY_FLUSH_MS = 30000;
 
 export interface WorkItem {
   id: string;
@@ -65,9 +87,42 @@ export class Store {
   envs = new Map<string, EnvRecord>();
   sessions = new Map<string, SessionRecord>(); // by sessionId
   private byIngressToken = new Map<string, string>(); // ingressToken → sessionId
-  private history = new Map<string, unknown[]>(); // sessionId → event payloads (capped ring), for late web subscribers
+  private memHistory = new Map<string, unknown[]>(); // no-pool fallback: capped ring
+  private pool?: Pool;
+  private dirtyActivity = new Set<string>(); // sessionIds whose last_activity needs flushing
+  private flushTimer?: NodeJS.Timeout;
 
-  createEnv(meta: { credential: string; machineName?: string; dir?: string; branch?: string; gitRepoUrl?: string; reuseId?: string }): EnvRecord {
+  constructor(opts: { pool?: Pool } = {}) {
+    this.pool = opts.pool;
+    if (this.pool) {
+      // touch() fires on every inbound event; batch the bumps instead of one UPDATE each.
+      this.flushTimer = setInterval(() => void this.flushActivity(), ACTIVITY_FLUSH_MS);
+      this.flushTimer.unref?.();
+    }
+  }
+
+  /** Hydrate the read cache from PG. No-op without a pool. */
+  async load(windowDays = Number(process.env.CCC_LOAD_WINDOW_DAYS || 30)): Promise<{ envs: number; sessions: number }> {
+    if (!this.pool) return { envs: 0, sessions: 0 };
+    const { envs, sessions } = await loadRecent(this.pool, windowDays);
+    for (const e of envs) {
+      this.envs.set(e.id, { ...e, online: false, queue: [], inflight: new Map() });
+    }
+    for (const s of sessions) {
+      this.sessions.set(s.id, { ...s, wsConnected: false, sseRes: null, seq: 0 });
+      this.byIngressToken.set(s.ingressToken, s.id);
+    }
+    return { envs: envs.length, sessions: sessions.length };
+  }
+
+  /** Flush pending last_activity bumps and stop the timer. */
+  async close(): Promise<void> {
+    if (this.flushTimer) clearInterval(this.flushTimer);
+    this.flushTimer = undefined;
+    await this.flushActivity();
+  }
+
+  async createEnv(meta: { credential: string; machineName?: string; dir?: string; branch?: string; gitRepoUrl?: string; reuseId?: string }): Promise<EnvRecord> {
     const id = meta.reuseId && this.envs.has(meta.reuseId) ? meta.reuseId : meta.reuseId || 'env-' + crypto.randomUUID();
     const rec: EnvRecord = {
       id, credential: meta.credential, machineName: meta.machineName, dir: meta.dir,
@@ -75,11 +130,12 @@ export class Store {
       queue: [], inflight: new Map(),
     };
     this.envs.set(id, rec);
+    if (this.pool) await upsertEnv(this.pool, rec);
     return rec;
   }
 
   /** Queue a session work item for an environment; the session inherits the env's owner + metadata. */
-  pushSessionWork(envId: string, apiBaseUrl: string): { work: WorkItem; session: SessionRecord } | null {
+  async pushSessionWork(envId: string, apiBaseUrl: string): Promise<{ work: WorkItem; session: SessionRecord } | null> {
     const env = this.envs.get(envId);
     if (!env) return null;
     const sessionId = 'ses-' + crypto.randomUUID();
@@ -97,7 +153,8 @@ export class Store {
     };
     this.sessions.set(sessionId, session);
     this.byIngressToken.set(ingressToken, sessionId);
-    env.queue.push(work);
+    env.queue.push(work); // in-flight lease: memory only, invalid after a restart anyway
+    if (this.pool) await upsertSession(this.pool, session);
     return { work, session };
   }
 
@@ -106,20 +163,45 @@ export class Store {
    * interactive claude creates a code-session directly and then fetches worker creds. The
    * session id is the `cse_…` we return; `ingressToken` doubles as the `worker_jwt`.
    */
-  createReplSession(credential: string, meta: { dir?: string; title?: string; machineName?: string }): SessionRecord {
-    const id = 'cse_' + crypto.randomBytes(8).toString('hex');
+  async createReplSession(credential: string, meta: { dir?: string; title?: string; machineName?: string }, id?: string): Promise<SessionRecord> {
+    const sid = id && id.startsWith('cse_') ? id : 'cse_' + crypto.randomBytes(8).toString('hex');
+    const existing = this.sessions.get(sid);
+    if (existing && existing.credential === credential) {
+      this.patchSession(existing, meta);
+      if (this.pool) await upsertSession(this.pool, existing);
+      return existing;
+    }
     const ingressToken = 'sit_' + crypto.randomBytes(18).toString('hex');
     const now = Date.now();
     const session: SessionRecord = {
-      id, credential, envId: '', ingressToken, workId: '',
-      machineName: meta.machineName ?? meta.title, dir: meta.dir, // title = the /rc session name (hostname by default)
+      id: sid, credential, envId: '', ingressToken, workId: '',
+      machineName: meta.machineName ?? meta.title ?? os.hostname(),
+      dir: meta.dir,
       createdAt: now, lastActivity: now, wsConnected: false, sseRes: null, seq: 0,
     };
-    this.sessions.set(id, session);
-    this.byIngressToken.set(ingressToken, id);
+    this.sessions.set(sid, session);
+    this.byIngressToken.set(ingressToken, sid);
+    if (this.pool) await upsertSession(this.pool, session);
     return session;
   }
 
+  /** Fill machine/dir when a later event (create body, system:init) knows more. */
+  async updateSessionMeta(sessionId: string, meta: { dir?: string; title?: string; machineName?: string; branch?: string; gitRepoUrl?: string }): Promise<boolean> {
+    const s = this.sessions.get(sessionId);
+    if (!s) return false;
+    const changed = this.patchSession(s, meta);
+    if (changed && this.pool) await upsertSession(this.pool, s);
+    return changed;
+  }
+
+  /** Pull cwd (and anything else useful) out of a data-plane payload. */
+  async applyEventMeta(sessionId: string, payload: any): Promise<boolean> {
+    if (!payload || payload.type !== 'system' || payload.subtype !== 'init') return false;
+    const dir = typeof payload.cwd === 'string' && payload.cwd ? payload.cwd : undefined;
+    return this.updateSessionMeta(sessionId, { dir });
+  }
+
+  // ── work queue (memory only: a lease is meaningless across a restart) ──
   nextWork(envId: string): WorkItem | null {
     const env = this.envs.get(envId);
     if (!env || env.queue.length === 0) return null;
@@ -132,7 +214,13 @@ export class Store {
     this.envs.get(envId)?.inflight.delete(workId);
   }
 
-  // ── multi-tenant lookups ──
+  // ── synchronous reads (served from the cache) ──
+  getSession(sessionId: string): SessionRecord | undefined {
+    return this.sessions.get(sessionId);
+  }
+  getEnv(envId: string): EnvRecord | undefined {
+    return this.envs.get(envId);
+  }
   sessionByIngressToken(token: string): SessionRecord | undefined {
     const id = this.byIngressToken.get(token);
     return id ? this.sessions.get(id) : undefined;
@@ -146,24 +234,51 @@ export class Store {
 
   touch(sessionId: string): void {
     const s = this.sessions.get(sessionId);
-    if (s) s.lastActivity = Date.now();
+    if (!s) return;
+    s.lastActivity = Date.now();
+    if (this.pool) this.dirtyActivity.add(sessionId); // batched by the flush timer
   }
 
-  /** Record a child event payload so a web client that subscribes later gets the transcript.
-   * The REPL bridge replays the whole pre-/rc conversation on connect, so this captures it. */
-  appendEvent(sessionId: string, payload: unknown): void {
-    let h = this.history.get(sessionId);
-    if (!h) { h = []; this.history.set(sessionId, h); }
-    h.push(payload);
-    if (h.length > 3000) h.splice(0, h.length - 3000); // cap
-  }
-  historyFor(sessionId: string): unknown[] {
-    return this.history.get(sessionId) ?? [];
+  private async flushActivity(): Promise<void> {
+    if (!this.pool || this.dirtyActivity.size === 0) return;
+    const ids = [...this.dirtyActivity];
+    this.dirtyActivity.clear();
+    const rows = ids.map((id) => this.sessions.get(id)).filter(Boolean).map((s) => ({ id: s!.id, lastActivity: s!.lastActivity }));
+    try {
+      await flushActivity(this.pool, rows);
+    } catch (e: any) {
+      for (const id of ids) this.dirtyActivity.add(id); // retry on the next tick
+      console.error(`[store] last_activity flush failed: ${e.message}`);
+    }
   }
 
+  /**
+   * Record child event payloads so a web client that subscribes later gets the transcript.
+   * The REPL bridge replays the whole pre-/rc conversation on connect, so this captures it.
+   * Batched: one multi-row INSERT per /worker/events POST.
+   */
+  async appendEvents(sessionId: string, payloads: unknown[]): Promise<void> {
+    const storable = payloads.filter((p) => !UNSTORED_EVENT_TYPES.has((p as any)?.type));
+    if (!storable.length) return;
+    if (!this.pool) {
+      let h = this.memHistory.get(sessionId);
+      if (!h) { h = []; this.memHistory.set(sessionId, h); }
+      h.push(...storable);
+      if (h.length > HISTORY_LIMIT) h.splice(0, h.length - HISTORY_LIMIT);
+      return;
+    }
+    await insertEvents(this.pool, sessionId, storable.map((p) => ({ type: (p as any)?.type, payload: p })));
+  }
+
+  async historyFor(sessionId: string): Promise<unknown[]> {
+    if (!this.pool) return this.memHistory.get(sessionId) ?? [];
+    return selectHistory(this.pool, sessionId, HISTORY_LIMIT);
+  }
+
+  // ── runtime connection state (memory only) ──
   markWsConnected(sessionId: string, connected: boolean): void {
     const s = this.sessions.get(sessionId);
-    if (s) { s.wsConnected = connected; s.lastActivity = Date.now(); }
+    if (s) { s.wsConnected = connected; this.touch(sessionId); }
   }
 
   /** Mark an environment (and its sessions) offline — injector gone / deregistered. */
@@ -183,11 +298,18 @@ export class Store {
     if (s) s.sseRes = null;
   }
 
-  /**
-   * Push one stream-json `payload` to the child over its SSE stream as a `client_event`
-   * frame (the exact shape sse-bridge-transport's handleSSEFrame expects). Returns false
-   * if there is no open stream for the session.
-   */
+  private patchSession(s: SessionRecord, meta: { dir?: string; title?: string; machineName?: string; branch?: string; gitRepoUrl?: string }): boolean {
+    let changed = false;
+    const machine = meta.machineName ?? meta.title;
+    if (machine && s.machineName !== machine) { s.machineName = machine; changed = true; }
+    if (meta.dir && s.dir !== meta.dir) { s.dir = meta.dir; changed = true; }
+    if (meta.branch && s.branch !== meta.branch) { s.branch = meta.branch; changed = true; }
+    if (meta.gitRepoUrl && s.gitRepoUrl !== meta.gitRepoUrl) { s.gitRepoUrl = meta.gitRepoUrl; changed = true; }
+    if (changed) s.lastActivity = Date.now();
+    return changed;
+  }
+
+  /** Push one stream-json payload to the child over SSE. False if no open stream. */
   sendToChild(sessionId: string, payload: unknown): boolean {
     const s = this.sessions.get(sessionId);
     if (!s || !s.sseRes) return false;
@@ -195,7 +317,7 @@ export class Store {
     const data = JSON.stringify({ sequence_num: seq, event_id: `srv-${seq}`, event_type: 'relay', payload });
     try {
       s.sseRes.write(`event: client_event\ndata: ${data}\nid: ${seq}\n\n`);
-      s.lastActivity = Date.now();
+      this.touch(sessionId);
       return true;
     } catch {
       return false;

@@ -11,6 +11,7 @@ import type { Server, IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import type { Store } from './store.ts';
 import type { ServerEvent, ControllerServer } from './index.ts';
+import { pushNotificationFrom } from '../push-event.ts';
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const acceptKey = (k: string) => crypto.createHash('sha1').update(k + WS_GUID).digest('base64');
@@ -18,6 +19,9 @@ const acceptKey = (k: string) => crypto.createHash('sha1').update(k + WS_GUID).d
 interface WebSock {
   credential: string;
   subscribed: string | null; // sessionId currently being viewed
+  /** Non-null while a history backfill is in flight: live events queue here so they are
+   * delivered after the transcript instead of racing ahead of it. */
+  pending: unknown[] | null;
   socket: Duplex;
   send: (obj: unknown) => void;
 }
@@ -49,7 +53,7 @@ export function attachWebChannel(server: Server, api: WebApi, store: Store) {
     }
     socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n' + `Sec-WebSocket-Accept: ${acceptKey(key)}\r\n\r\n`);
 
-    const ws: WebSock = { credential, subscribed: null, socket: socket as Duplex, send: (obj) => sendFrame(socket as Duplex, JSON.stringify(obj)) };
+    const ws: WebSock = { credential, subscribed: null, pending: null, socket: socket as Duplex, send: (obj) => sendFrame(socket as Duplex, JSON.stringify(obj)) };
     socks.add(ws);
     ws.send({ type: 'sessions', sessions: store.sessionsForCredential(credential).map((s) => store.view(s)) });
 
@@ -70,7 +74,7 @@ export function attachWebChannel(server: Server, api: WebApi, store: Store) {
         if (f.fin) {
           const full = parts.length === 1 ? parts[0] : Buffer.concat(parts);
           parts.length = 0;
-          if (op === 0x1) handleMsg(ws, full.toString('utf8'));
+          if (op === 0x1) void handleMsg(ws, full.toString('utf8')).catch(() => {});
         }
       }
     });
@@ -79,16 +83,23 @@ export function attachWebChannel(server: Server, api: WebApi, store: Store) {
     socket.on('error', done);
   });
 
-  const owns = (ws: WebSock, sid: string) => store.sessions.get(sid)?.credential === ws.credential;
+  // Synchronous — runs on every inbound frame, served from the store's read cache.
+  const owns = (ws: WebSock, sid: string) => store.getSession(sid)?.credential === ws.credential;
 
-  function handleMsg(ws: WebSock, text: string) {
+  async function handleMsg(ws: WebSock, text: string) {
     let m: any;
     try { m = JSON.parse(text); } catch { return; }
     switch (m?.type) {
       case 'subscribe':
         if (owns(ws, m.sessionId)) {
+          // Subscribe first (so nothing is dropped), buffer, backfill, then drain.
           ws.subscribed = m.sessionId;
-          ws.send({ type: 'history', sessionId: m.sessionId, events: store.historyFor(m.sessionId) }); // backfill transcript
+          ws.pending = [];
+          const events = await store.historyFor(m.sessionId);
+          ws.send({ type: 'history', sessionId: m.sessionId, events });
+          const buffered = ws.pending;
+          ws.pending = null;
+          for (const payload of buffered) ws.send({ type: 'event', sessionId: m.sessionId, payload });
         }
         break;
       case 'user_message':
@@ -112,7 +123,14 @@ export function attachWebChannel(server: Server, api: WebApi, store: Store) {
     /** Fan a ServerEvent out to the right web sockets. */
     handleEvent(e: ServerEvent) {
       if (e.type === 'claude.event') {
-        for (const ws of socks) if (ws.credential === e.credential && ws.subscribed === e.sessionId) ws.send({ type: 'event', sessionId: e.sessionId, payload: e.payload });
+        const note = pushNotificationFrom(e.payload);
+        for (const ws of socks) {
+          if (ws.credential !== e.credential) continue;
+          if (ws.subscribed === e.sessionId) {
+            if (ws.pending) ws.pending.push(e.payload); // mid-backfill: keep the order
+            else ws.send({ type: 'event', sessionId: e.sessionId, payload: e.payload });
+          } else if (note) ws.send({ type: 'notify', sessionId: e.sessionId, message: note.message, status: note.status, ready: note.ready });
+        }
       } else if ('credential' in e && (e as any).credential) {
         pushList((e as any).credential); // env.register / session.create / ws.connect / ws.close / env.deregister
       }

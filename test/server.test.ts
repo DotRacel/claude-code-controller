@@ -6,6 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createControllerServer, type ControllerServer, type ServerEvent } from '../src/server/index.ts';
+import { Store } from '../src/server/store.ts';
 
 const CRED = 'test-cred-AAA';
 const auth = (t: string) => ({ Authorization: `Bearer ${t}` });
@@ -142,9 +143,45 @@ test('interactive REPL bridge: createCodeSession (owned) → fetchRemoteCredenti
   });
 });
 
-test('interactive createCodeSession without a credential is 401; /bridge for unknown session is 404', async () => {
+test('interactive createCodeSession without a credential is 401; GET missing session is 404 not 401', async () => {
   await withServer(async (server) => {
     assert.equal((await fetch(`${server.baseUrl}/v1/code/sessions`, { method: 'POST', body: '{}' })).status, 401);
-    assert.equal((await fetch(`${server.baseUrl}/v1/code/sessions/cse_nope/bridge`, { method: 'POST', headers: auth(CRED), body: '{}' })).status, 404);
+    // 401 here would surface in the TUI as "Session expired. Please run /login".
+    const missing = await fetch(`${server.baseUrl}/v1/code/sessions/cse_gone`, { headers: auth(CRED) });
+    assert.equal(missing.status, 404);
+  });
+});
+
+test('GET /v1/code/sessions/{id} accepts the owning credential (not just the worker jwt)', async () => {
+  await withServer(async (server) => {
+    const cs = await fetch(`${server.baseUrl}/v1/code/sessions`, {
+      method: 'POST', headers: auth(CRED), body: JSON.stringify({ config: { cwd: '/p' } }),
+    }).then((r) => r.json());
+    const got = await fetch(`${server.baseUrl}/v1/code/sessions/${cs.session.id}`, { headers: auth(CRED) }).then(async (r) => ({ status: r.status, body: await r.json() }));
+    assert.equal(got.status, 200);
+    assert.equal(got.body.session.id, cs.session.id);
+    assert.equal((await fetch(`${server.baseUrl}/v1/code/sessions/${cs.session.id}`, { headers: auth('other-cred') })).status, 401);
+  });
+});
+
+// Reload-across-restart now lives in db.test.ts (it needs a real database).
+test('system:init fills session dir', async () => {
+  const a = new Store();
+  const s = await a.createReplSession(CRED, { title: 'box', dir: '/proj' }, 'cse_persist1');
+  assert.equal(s.machineName, 'box');
+  assert.equal(s.dir, '/proj');
+  assert.equal(await a.applyEventMeta(s.id, { type: 'system', subtype: 'init', cwd: '/home/racel/app' }), true);
+  assert.equal(a.getSession(s.id)?.dir, '/home/racel/app');
+});
+
+test('POST /bridge resurrects a cse_* id after a server restart (same credential)', async () => {
+  await withServer(async (server) => {
+    const creds = await fetch(`${server.baseUrl}/v1/code/sessions/cse_deadbeef/bridge`, {
+      method: 'POST', headers: auth(CRED), body: '{}',
+    }).then(async (r) => ({ status: r.status, body: await r.json() }));
+    assert.equal(creds.status, 200);
+    assert.equal(server.store.sessions.get('cse_deadbeef')?.credential, CRED);
+    assert.equal(typeof creds.body.worker_jwt, 'string');
+    assert.equal(server.store.sessionByIngressToken(creds.body.worker_jwt)?.id, 'cse_deadbeef');
   });
 });

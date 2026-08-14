@@ -77,8 +77,8 @@ async function main() {
 
       if (e.type === 'env.register' && pushedForEnv !== e.envId) {
         pushedForEnv = e.envId;
-        setTimeout(() => {
-          const r = server.pushSessionWork(e.envId);
+        setTimeout(async () => {
+          const r = await server.pushSessionWork(e.envId);
           console.log(`${ts()} [cli] pushed session work → session=${r?.session.id}`);
         }, 400);
       }

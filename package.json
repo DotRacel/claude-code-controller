@@ -19,6 +19,16 @@
     "capture-events": "node test/capture-events.ts",
     "probe-interactive": "node test/probe-interactive.ts",
     "e2e-interactive": "bash test/e2e-interactive.sh",
-    "test": "node --test test/protocol.test.ts test/server.test.ts test/fixtures.test.ts test/transcript.test.ts test/pwa.test.ts test/push-event.test.ts test/control-cli.test.ts"
+    "e2e-persist": "bash test/e2e-persist.sh",
+    "db:up": "docker compose up -d db",
+    "db:down": "docker compose down",
+    "db:psql": "docker compose exec db psql -U ccc -d ccc",
+    "test": "node --test test/protocol.test.ts test/server.test.ts test/fixtures.test.ts test/transcript.test.ts test/pwa.test.ts test/push-event.test.ts test/control-cli.test.ts test/db.test.ts"
+  },
+  "dependencies": {
+    "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.21.0"
   }
 }

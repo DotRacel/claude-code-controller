@@ -72,7 +72,7 @@ async function main() {
       }
       if (e.type === 'env.register' && pushedForEnv !== e.envId) {
         pushedForEnv = e.envId;
-        setTimeout(() => server.pushSessionWork(e.envId), 400);
+        setTimeout(() => void server.pushSessionWork(e.envId), 400);
       }
       if (e.type === 'ws.connect') { sessionId = e.sessionId; wsConnected = true; resolveWs?.(); }
     },
