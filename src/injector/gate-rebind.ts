@@ -19,7 +19,7 @@ import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'n
 import crypto from 'node:crypto';
 import { InspectorClient } from './ws-client.ts';
 import { getFreePort, waitForPort, treeKiller, DEFAULT_CLAUDE } from './attach.ts';
-import { MAIN_SCRIPT_URL, GATES, INTERACTIVE_GATES, fill, buildLocatorExpr, buildInteractiveLocatorExpr, buildChildLocatorExpr, childDhsRebind, type RebindConfig } from './anchors.ts';
+import { GATES, INTERACTIVE_GATES, fill, buildLocatorExpr, buildInteractiveLocatorExpr, buildChildLocatorExpr, childDhsRebind, type RebindConfig } from './anchors.ts';
 
 export interface GateRebindOpts extends RebindConfig {
   claudeBin?: string;
@@ -79,13 +79,13 @@ async function attachChildAndRebind(childPort: number, childWsUrl: string, log: 
     await new Promise((r) => setTimeout(r, 120));
     loc = rval(await cic.send('Runtime.evaluate', { expression: `globalThis[${JSON.stringify(CKEY)}]`, returnByValue: true }));
   }
-  if (!loc || typeof loc !== 'object' || !loc.dHs || loc.bpLine == null) {
+  if (!loc || typeof loc !== 'object' || !loc.main || !loc.dHs || loc.bpLine == null) {
     log('[child] gate locate failed: ' + JSON.stringify(loc) + ' — releasing anyway');
     await cic.send('Inspector.initialized').catch(() => {});
     return;
   }
   log(`[child] dHs=${loc.dHs} bp@L${loc.bpLine}C${loc.bpCol}`);
-  await cic.send('Debugger.setBreakpointByUrl', { url: MAIN_SCRIPT_URL, lineNumber: loc.bpLine, columnNumber: loc.bpCol });
+  await cic.send('Debugger.setBreakpointByUrl', { url: loc.main, lineNumber: loc.bpLine, columnNumber: loc.bpCol });
 
   let childHit = false;
   cic.on('Debugger.paused', async (p: any) => {
@@ -166,7 +166,11 @@ export async function launchWithGatesRebound(opts: GateRebindOpts): Promise<Gate
       await new Promise((r) => setTimeout(r, 120));
       located = rval(await ic.send('Runtime.evaluate', { expression: `globalThis[${JSON.stringify(GKEY)}]`, returnByValue: true }));
     }
-    if (!Array.isArray(located)) throw new Error(`gate locator failed: ${JSON.stringify(located)}`);
+    if (!located || typeof located !== 'object' || !located.main || !Array.isArray(located.gates)) {
+      throw new Error(`gate locator failed: ${JSON.stringify(located)}`);
+    }
+    const MAIN = located.main;
+    log(`[gate] main script url: ${MAIN}`);
 
     // Critical: the child claude that bridgeMain spawns inherits the parent's env. If it
     // inherits BUN_INSPECT it will itself pause waiting for a debugger and never connect
@@ -179,10 +183,10 @@ export async function launchWithGatesRebound(opts: GateRebindOpts): Promise<Gate
     const byLine = new Map<number, GateReport>();
     const vars = { TOKEN: JSON.stringify(bridgeToken), URL: JSON.stringify(bridgeBaseUrl) };
 
-    for (const g of located as any[]) {
+    for (const g of located.gates as any[]) {
       const rep: GateReport = { id: g.id, located: !g.error, error: g.error, line: g.line, col: g.col, aliases: g.aliases };
       if (!g.error) {
-        const sb = await ic.send('Debugger.setBreakpointByUrl', { url: MAIN_SCRIPT_URL, lineNumber: g.line, columnNumber: g.col }).catch((e) => ({ __e: e.message }));
+        const sb = await ic.send('Debugger.setBreakpointByUrl', { url: MAIN, lineNumber: g.line, columnNumber: g.col }).catch((e) => ({ __e: e.message }));
         if (sb && sb.breakpointId) {
           rep.breakpointId = sb.breakpointId;
           byBp.set(sb.breakpointId, rep);
@@ -351,7 +355,11 @@ export async function launchInteractiveWithGatesRebound(opts: InteractiveLaunchO
       await new Promise((r) => setTimeout(r, 120));
       located = rval(await ic.send('Runtime.evaluate', { expression: `globalThis[${JSON.stringify(GKEY)}]`, returnByValue: true }));
     }
-    if (!Array.isArray(located)) throw new Error(`interactive gate locator failed: ${JSON.stringify(located)}`);
+    if (!located || typeof located !== 'object' || !located.main || !Array.isArray(located.gates)) {
+      throw new Error(`interactive gate locator failed: ${JSON.stringify(located)}`);
+    }
+    const MAIN = located.main;
+    log(`[int] main script url: ${MAIN}`);
 
     // The interactive path shouldn't spawn a remote-control child, but strip BUN_INSPECT
     // anyway so nothing it launches inherits a wait URL.
@@ -362,11 +370,11 @@ export async function launchInteractiveWithGatesRebound(opts: InteractiveLaunchO
     const vars = { TOKEN: JSON.stringify(bridgeToken), URL: JSON.stringify(bridgeBaseUrl) };
     const specById = new Map(INTERACTIVE_GATES.map((s) => [s.id, s]));
 
-    for (const g of located as any[]) {
+    for (const g of located.gates as any[]) {
       const rep: GateReport = { id: g.id, located: !g.error, error: g.error, line: g.line, col: g.col, aliases: g.names ? { fn: g.alias, rebind: g.names.join(',') } : undefined };
       if (!g.error) {
         namesById.set(g.id, g.names);
-        const sb = await ic.send('Debugger.setBreakpointByUrl', { url: MAIN_SCRIPT_URL, lineNumber: g.line, columnNumber: g.col }).catch((e) => ({ __e: e.message }));
+        const sb = await ic.send('Debugger.setBreakpointByUrl', { url: MAIN, lineNumber: g.line, columnNumber: g.col }).catch((e) => ({ __e: e.message }));
         if (sb && sb.breakpointId) rep.breakpointId = sb.breakpointId;
         else { rep.located = false; rep.error = 'setBreakpoint-failed'; }
       }

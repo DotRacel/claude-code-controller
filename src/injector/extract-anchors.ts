@@ -4,10 +4,12 @@
  *
  * Why this shape: `Debugger.getScriptSource` / `Debugger.searchInContent` both HANG on
  * the 62951-line main bundle (measured). But the compiled binary mounts its own source
- * at `/$bunfs/root/cli`, and the target process can read it via `Bun.file(...).text()`.
- * So we ship a probe into the target that reads the source, locates each anchor string,
- * and returns only small {line, col, count, ctx} records. We poll a global for the
- * result (JSC won't unwrap the promise for us).
+ * at `Bun.main` (NOT a fixed path — moved from `/$bunfs/root/src/entrypoints/cli.js` on
+ * ≤2.1.228 to the flattened `/$bunfs/root/cli` on ≥2.1.229; read it at runtime, never
+ * hardcode it), and the target process can read it via `Bun.file(...).text()`. So we ship
+ * a probe into the target that reads the source, locates each anchor string, and returns
+ * only small {line, col, count, ctx} records. We poll a global for the result (JSC won't
+ * unwrap the promise for us).
  *
  * Run:  node src/injector/extract-anchors.ts
  * Out:  prints a report + writes artifacts/anchors-dump.json
@@ -16,8 +18,6 @@ import { writeFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { launchAndAttach } from './attach.ts';
-
-const BUNFS_MAIN = '/$bunfs/root/cli';
 
 // Each probe: a human name + the literal to search for + which occurrence + context radius.
 // occ:-1 means "return every occurrence" (line/col only, no ctx, to disambiguate dupes).
@@ -48,15 +48,16 @@ const PROBES: Probe[] = [
 
 // Probe body runs INSIDE the target. Reads the bundle, resolves each probe to
 // {line,col,count} (+ctx unless occ:-1 for every hit). Stashes on a global we poll.
-function buildProbeExpr(probes: Probe[], globalKey: string, mainPath: string): string {
+function buildProbeExpr(probes: Probe[], globalKey: string): string {
   return `
     globalThis[${JSON.stringify(globalKey)}] = "pending";
-    Bun.file(${JSON.stringify(mainPath)}).text().then(function(s){
+    var MAIN = Bun.main;
+    Bun.file(MAIN).text().then(function(s){
       var PROBES = ${JSON.stringify(probes)};
       function lineColOf(idx){ var pre = s.slice(0, idx); var nl = pre.lastIndexOf("\\n"); return { line: pre.split("\\n").length - 1, col: idx - (nl + 1) }; }
       function countOf(needle){ var c=0,j=0; while((j=s.indexOf(needle,j))>=0){c++;j+=needle.length;} return c; }
       function nthIdx(needle,n){ var j=0,k=0; while((j=s.indexOf(needle,j))>=0){ if(k===n) return j; k++; j+=needle.length; } return -1; }
-      var out = { meta: { total_lines: s.split("\\n").length, bytes: s.length } };
+      var out = { meta: { main: MAIN, total_lines: s.split("\\n").length, bytes: s.length } };
       for (var p of PROBES) {
         var cnt = countOf(p.needle);
         if (p.occ === -1) {
@@ -90,7 +91,7 @@ async function main() {
   });
   try {
     const ev = (expr: string) => h.ic.send('Runtime.evaluate', { expression: expr, returnByValue: true }, { timeoutMs: 25000 }).then(rval).catch((e) => 'ERR:' + e.message);
-    await ev(buildProbeExpr(PROBES, GLOBAL_KEY, BUNFS_MAIN));
+    await ev(buildProbeExpr(PROBES, GLOBAL_KEY));
     let out: any = 'pending';
     for (let i = 0; i < 40; i++) {
       await new Promise((r) => setTimeout(r, 400));
@@ -103,7 +104,7 @@ async function main() {
       return;
     }
     // Report
-    console.error(`[extract] bundle: ${out.meta?.total_lines} lines, ${out.meta?.bytes} bytes`);
+    console.error(`[extract] bundle: ${out.meta?.main} — ${out.meta?.total_lines} lines, ${out.meta?.bytes} bytes`);
     for (const p of PROBES) {
       const r = out[p.name];
       if (!r) continue;

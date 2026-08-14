@@ -25,10 +25,13 @@ the CCR v2 SSE data-plane  ⇒  ✅ PASS
 compiled in. We launch it with `BUN_INSPECT=ws://127.0.0.1:<port>?wait=1` (pauses before
 user code), attach, and — key discovery — **release with `Inspector.initialized`** (JSC has
 no `Runtime.runIfWaitingForDebugger`; cc-injector believed wait was unreleasable). While
-paused we read the bundle in-process via `Bun.file('/$bunfs/root/cli').text()` to locate
-each gate (string/structural anchors → current minified aliases), set pending breakpoints,
-release, and on each hit **rebind the local alias** with `evaluateOnCallFrame` (JSC has no
-`setReturnValue`; source hot-swap is impossible — the bundle is one 62,951-line script).
+paused we read the bundle in-process via `Bun.file(Bun.main).text()` to locate each gate
+(string/structural anchors → current minified aliases), set pending breakpoints, release, and
+on each hit **rebind the local alias** with `evaluateOnCallFrame` (JSC has no `setReturnValue`;
+source hot-swap is impossible — the bundle is one 62,951-line script). `Bun.main` is read at
+runtime rather than hardcoded: the embedded entry path moved from
+`/$bunfs/root/src/entrypoints/cli.js` (≤2.1.228) to the flattened `/$bunfs/root/cli`
+(≥2.1.229) — see [Version compatibility](#version-compatibility).
 
 **Gates rebound (parent `claude remote-control`):** `hasStoredOAuthToken`,
 `getBridgeDisabledReason`, `checkBridgeMinVersion`, `isPolicyAllowed`,
@@ -50,6 +53,17 @@ gone; the data-plane is now **CCR v2 code-sessions over SSE** — `GET .../worke
 (SSE) + `POST .../worker/events`, plus `GET/PUT .../worker` and `POST .../worker/register`.
 All version-fragile facts live in `src/injector/anchors.ts`; re-run `extract-anchors` on a
 new version to refresh them.
+
+## Version compatibility
+
+Swept every published `@anthropic-ai/claude-code` version (Docker-isolated, `test/test-gates.ts`)
+by `npm install`ing each one's native binary — no need to touch a real `claude` install to test
+this. **Works ≥2.1.229** (all 6 headless gates locate/hit/rebind). **Fails ≤2.1.228**: the
+embedded bundle's virtual-fs entry path was `/$bunfs/root/src/entrypoints/cli.js` before 2.1.229,
+not the flattened `/$bunfs/root/cli` those newer builds use — the locators now read `Bun.main` at
+runtime instead of assuming a path, so this axis of breakage is fixed for any past *or future*
+rename. Below 2.1.229 the gate guard expressions themselves haven't been probed — the sweep never
+got past locating the file before this fix.
 
 ## Layout
 

@@ -3,10 +3,10 @@
  *
  * When a Claude Code update lands, THIS is the first (usually only) file to review.
  * Nothing here depends on stable minified symbol names: every gate is located at RUNTIME
- * by reading the bundle source (via `Bun.file('/$bunfs/root/cli').text()` inside the
- * target) and matching STRING / STRUCTURAL anchors, then extracting the current minified
- * local aliases with a regex. So an update that only reshuffles names keeps working; only
- * a change to the surrounding *code shape* (the guard expressions themselves) needs edits.
+ * by reading the bundle source (via `Bun.file(Bun.main).text()` inside the target) and
+ * matching STRING / STRUCTURAL anchors, then extracting the current minified local aliases
+ * with a regex. So an update that only reshuffles names keeps working; only a change to the
+ * surrounding *code shape* (the guard expressions themselves) needs edits.
  *
  * Empirically established (see the probes under our own history + cc-injector):
  *  - `--inspect` flag is rejected; `BUN_INSPECT=ws://…?wait=1` opens the channel AND pauses
@@ -17,13 +17,16 @@
  *    Inspector.initialized  ⇒ execution resumes and hits our pending breakpoints.
  *  - In the wait state we CAN `Runtime.evaluate` + `Bun.file().text()` (promise resolves),
  *    so we locate every gate before releasing — zero startup race.
+ *  - The embedded bundle's virtual-fs path is NOT stable across versions — ≤2.1.228 it's
+ *    `/$bunfs/root/src/entrypoints/cli.js`, ≥2.1.229 it's the flattened `/$bunfs/root/cli`
+ *    (confirmed by probe). A hardcoded guess made every gate lookup ENOENT below 2.1.229, so
+ *    every locator here reads `Bun.main` at runtime instead and reports it back so the Node
+ *    side can point `Debugger.setBreakpointByUrl` at the same URL.
  *  - `Debugger.setBreakpointByUrl` accepts a breakpoint on a not-yet-parsed script
  *    (pending, locations:[]) and it fires once the bundle parses after release.
  *  - On pause, `Debugger.evaluateOnCallFrame` can REBIND a local alias in that frame
  *    (`alias = function(){…}`); the guard that reads it right after sees the new value.
  */
-
-export const MAIN_SCRIPT_URL = '/$bunfs/root/cli';
 
 /** Config the rebinds need at runtime (filled in by gate-rebind, not fragile). */
 export interface RebindConfig {
@@ -150,14 +153,14 @@ export const GATES: GateSpec[] = [
  */
 export function buildChildLocatorExpr(globalKey: string): string {
   const K = JSON.stringify(globalKey);
-  const MAIN = JSON.stringify(MAIN_SCRIPT_URL);
   return `
     globalThis[${K}] = "pending";
     (async () => {
       try {
-        var s = await Bun.file(${MAIN}).text();
+        var MAIN = Bun.main;
+        var s = await Bun.file(MAIN).text();
         function lc(i){ var pre=s.slice(0,i); var nl=pre.lastIndexOf("\\n"); return { line: pre.split("\\n").length-1, col: i-(nl+1) }; }
-        var out = { total_lines: s.split("\\n").length };
+        var out = { main: MAIN, total_lines: s.split("\\n").length };
         // dHs name: locate uHs("--sdk-url"), walk back to the enclosing function name.
         var si = s.indexOf('("--sdk-url")');
         out.sdkUrlIdx = si;
@@ -192,18 +195,19 @@ export function fill(template: string, vars: Record<string, string>): string {
 
 /**
  * Build the target-side locator expression. Runs inside claude (wait state), reads the
- * bundle, resolves each gate to {id, line, col, aliases}, and stashes the array on
- * globalThis[globalKey]. The Node side polls that global, then sets breakpoints.
+ * bundle, resolves each gate to {id, line, col, aliases}, and stashes {main, gates} on
+ * globalThis[globalKey]. The Node side polls that global, then sets breakpoints against
+ * `main` (the resolved Bun.main URL — NOT assumed, since it moved across versions).
  */
 export function buildLocatorExpr(globalKey: string): string {
   const K = JSON.stringify(globalKey);
-  const MAIN = JSON.stringify(MAIN_SCRIPT_URL);
   const GATES_JSON = JSON.stringify(GATES);
   return `
     globalThis[${K}] = "pending";
     (async () => {
       try {
-        var s = await Bun.file(${MAIN}).text();
+        var MAIN = Bun.main;
+        var s = await Bun.file(MAIN).text();
         var GATES = ${GATES_JSON};
         function absLineCol(idx){ var pre = s.slice(0, idx); var nl = pre.lastIndexOf("\\n"); return { line: pre.split("\\n").length - 1, col: idx - (nl + 1) }; }
         function fillLocal(t, vars){ return t.replace(/\\$\\{(\\w+)\\}/g, function(_, k){ return (k in vars) ? vars[k] : ("\\${"+k+"}"); }); }
@@ -228,7 +232,7 @@ export function buildLocatorExpr(globalKey: string): string {
           var lc = absLineCol(absIdx);
           out.push({ id: G.id, line: lc.line, col: lc.col, aliases: aliases });
         }
-        globalThis[${K}] = out;
+        globalThis[${K}] = { main: MAIN, gates: out };
       } catch (e) { globalThis[${K}] = "ERR:" + (e && e.message || e); }
     })();
     "kicked";`;
@@ -324,13 +328,13 @@ export const INTERACTIVE_GATES: InteractiveGateSpec[] = [
  */
 export function buildInteractiveLocatorExpr(globalKey: string): string {
   const K = JSON.stringify(globalKey);
-  const MAIN = JSON.stringify(MAIN_SCRIPT_URL);
   const GATES_JSON = JSON.stringify(INTERACTIVE_GATES);
   return `
     globalThis[${K}] = "pending";
     (async () => {
       try {
-        var s = await Bun.file(${MAIN}).text();
+        var MAIN = Bun.main;
+        var s = await Bun.file(MAIN).text();
         var GATES = ${GATES_JSON};
         function absLineCol(idx){ var pre = s.slice(0, idx); var nl = pre.lastIndexOf("\\n"); return { line: pre.split("\\n").length - 1, col: idx - (nl + 1) }; }
         function expName(n){ var m = new RegExp(n + ":\\\\(\\\\)=>([\\\\w$]+)").exec(s); return m ? m[1] : null; }
@@ -364,7 +368,7 @@ export function buildInteractiveLocatorExpr(globalKey: string): string {
           var lc = absLineCol(bpIdx);
           out.push({ id: G.id, alias: alias, names: names, line: lc.line, col: lc.col });
         }
-        globalThis[${K}] = out;
+        globalThis[${K}] = { main: MAIN, gates: out };
       } catch (e) { globalThis[${K}] = "ERR:" + (e && e.message || e); }
     })();
     "kicked";`;
