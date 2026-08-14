@@ -1,0 +1,325 @@
+{
+  "system:init": {
+    "type": "system",
+    "subtype": "init",
+    "cwd": "/home/racel/claude-code-controller",
+    "session_id": "2b37464b-a6a9-5bd8-a37e-d227656c907a",
+    "tools": [
+      "Task",
+      "AskUserQuestion",
+      "Bash",
+      "CronCreate",
+      "CronDelete",
+      "CronList",
+      "DesignSync",
+      "Edit",
+      "EnterPlanMode",
+      "EnterWorktree",
+      "ExitPlanMode",
+      "ExitWorktree",
+      "ListAgents",
+      "LSP",
+      "Monitor",
+      "NotebookEdit",
+      "PushNotification",
+      "Read",
+      "ReportFindings",
+      "ScheduleWakeup",
+      "SendMessage",
+      "Skill",
+      "TaskCreate",
+      "TaskGet",
+      "TaskList",
+      "TaskOutput",
+      "TaskStop",
+      "TaskUpdate",
+      "WebFetch",
+      "WebSearch",
+      "Workflow",
+      "Write"
+    ],
+    "mcp_servers": [],
+    "model": "claude-opus-5[1m]",
+    "permissionMode": "default",
+    "slash_commands": [
+      "deep-research",
+      "design-sync",
+      "dataviz",
+      "update-config",
+      "verify",
+      "debug",
+      "code-review",
+      "simplify",
+      "batch",
+      "fewer-permission-prompts",
+      "doctor",
+      "loop",
+      "claude-api",
+      "run",
+      "run-skill-generator",
+      "agents",
+      "auto-mode-setup",
+      "autocompact",
+      "clear",
+      "color",
+      "compact",
+      "config",
+      "context",
+      "effort",
+      "fast",
+      "heapdump",
+      "init",
+      "mcp",
+      "import",
+      "model",
+      "__remote-workflow",
+      "workflow-launch-exec",
+      "reload-skills",
+      "rename",
+      "security-review",
+      "usage",
+      "insights",
+      "recap",
+      "goal",
+      "design",
+      "design-consent",
+      "design-revoke",
+      "list-agents",
+      "team-onboarding"
+    ],
+    "terminal_slash_commands": [
+      "doctor",
+      "color"
+    ],
+    "apiKeySource": "none",
+    "claude_code_version": "2.1.232",
+    "output_style": "default",
+    "agents": [
+      "claude",
+      "Explore",
+      "general-purpose",
+      "Plan",
+      "statusline-setup"
+    ],
+    "skills": [
+      "deep-research",
+      "design-sync",
+      "dataviz",
+      "update-config",
+      "verify",
+      "debug",
+      "code-review",
+      "simplify",
+      "batch",
+      "fewer-permission-prompts",
+      "doctor",
+      "loop",
+      "claude-api",
+      "run",
+      "run-skill-generator"
+    ],
+    "plugins": [
+      {
+        "name": "rust-analyzer-lsp",
+        "path": "/home/racel/.claude/plugins/cache/claude-plugins-official/rust-analyzer-lsp/1.0.0",
+        "source": "rust-analyzer-lsp@claude-plugins-official",
+        "version": "1.0.0"
+      }
+    ],
+    "capabilities": [
+      "interrupt_receipt_v1",
+      "interrupt_cancel_queued_v1",
+      "msg_lifecycle_v1"
+    ],
+    "analytics_disabled": false,
+    "product_feedback_disabled": false,
+    "uuid": "f5b4708b-b7f0-4c58-ba33-62b198bf532d",
+    "memory_paths": {
+      "auto": "/home/racel/.claude/projects/-home-racel-claude-code-controller/memory/"
+    },
+    "messaging_socket_path": "/run/user/1000/cc-socks/449041.sock",
+    "fast_mode_state": "off",
+    "fast_mode_disabled_reason": "sdk_opt_in_required"
+  },
+  "user": {
+    "type": "user",
+    "message": {
+      "role": "user",
+      "content": "Reply with exactly: hi"
+    },
+    "session_id": "2b37464b-a6a9-5bd8-a37e-d227656c907a",
+    "parent_tool_use_id": null,
+    "uuid": "23236643-0cee-4ba9-8d9c-bf73c2ed6f07",
+    "timestamp": "2026-08-14T03:44:45.045Z",
+    "isReplay": true,
+    "origin": {
+      "kind": "human"
+    }
+  },
+  "assistant": {
+    "type": "assistant",
+    "message": {
+      "model": "claude-opus-5",
+      "id": "msg_011Ce1xCHt7hHzhpLTpoByox",
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "hi"
+        }
+      ],
+      "stop_reason": null,
+      "stop_sequence": null,
+      "stop_details": null,
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 43156,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 0
+        },
+        "output_tokens": 1,
+        "service_tier": "standard",
+        "inference_geo": "not_available"
+      },
+      "context_management": null
+    },
+    "parent_tool_use_id": null,
+    "session_id": "2b37464b-a6a9-5bd8-a37e-d227656c907a",
+    "uuid": "e49fe5a9-f03a-4d88-821d-ee571d0678d0",
+    "timestamp": "2026-08-14T03:44:47.766Z"
+  },
+  "system:post_turn_summary": {
+    "type": "system",
+    "subtype": "post_turn_summary",
+    "summarizes_uuid": "e49fe5a9-f03a-4d88-821d-ee571d0678d0",
+    "status_category": "review_ready",
+    "status_detail": "replied with \"hi\" as requested",
+    "needs_action": "",
+    "uuid": "ccfb66c5-da72-4032-b51e-611ba6a557fe",
+    "session_id": "2b37464b-a6a9-5bd8-a37e-d227656c907a"
+  },
+  "result": {
+    "is_error": false,
+    "duration_api_ms": 6027,
+    "num_turns": 1,
+    "stop_reason": "end_turn",
+    "session_id": "2b37464b-a6a9-5bd8-a37e-d227656c907a",
+    "total_cost_usd": 0.025518,
+    "usage": {
+      "input_tokens": 2,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 43156,
+      "output_tokens": 4,
+      "output_tokens_details": {
+        "thinking_tokens": 0
+      },
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "not_available",
+      "iterations": [
+        {
+          "input_tokens": 2,
+          "output_tokens": 4,
+          "cache_read_input_tokens": 43156,
+          "cache_creation_input_tokens": 0,
+          "cache_creation": {
+            "ephemeral_5m_input_tokens": 0,
+            "ephemeral_1h_input_tokens": 0
+          },
+          "type": "message"
+        }
+      ],
+      "speed": "standard"
+    },
+    "modelUsage": {
+      "claude-opus-5[1m]": {
+        "inputTokens": 698,
+        "outputTokens": 18,
+        "cacheReadInputTokens": 43156,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 0.025518,
+        "contextWindow": 1000000,
+        "maxOutputTokens": 64000,
+        "canonicalModel": "claude-opus-5",
+        "provider": "firstParty"
+      }
+    },
+    "permission_denials": [],
+    "terminal_reason": "completed",
+    "fast_mode_state": "off",
+    "fast_mode_disabled_reason": "sdk_opt_in_required",
+    "origin": {
+      "kind": "human"
+    },
+    "subtype": "success",
+    "api_error_status": null,
+    "result": "hi",
+    "ttft_ms": 2790,
+    "ttft_stream_ms": 2132,
+    "time_to_request_ms": 136,
+    "type": "result",
+    "duration_ms": 4956,
+    "uuid": "49c6ce40-ae89-4a70-ab19-d613b92e033c"
+  },
+  "control_request:can_use_tool": {
+    "type": "control_request",
+    "request_id": "213479f0-7314-4463-9035-fcc5477a8c70",
+    "request": {
+      "subtype": "can_use_tool",
+      "tool_name": "Write",
+      "display_name": "Write",
+      "input": {
+        "file_path": "/tmp/ccc-cap.txt",
+        "content": "capture-sample"
+      },
+      "description": "/tmp/ccc-cap.txt",
+      "permission_suggestions": [
+        {
+          "type": "setMode",
+          "mode": "acceptEdits",
+          "destination": "session"
+        },
+        {
+          "type": "addDirectories",
+          "directories": [
+            "/tmp"
+          ],
+          "destination": "session"
+        }
+      ],
+      "decision_reason": "Path is outside allowed working directories",
+      "decision_reason_type": "workingDir",
+      "tool_use_id": "toolu_019t3RM1pAVSXRXseU1yitKH"
+    },
+    "uuid": "a709583c-cdad-4fe2-b880-18106a3da14c"
+  },
+  "system:task_summary": {
+    "type": "system",
+    "subtype": "task_summary",
+    "detail": "Writing /tmp/ccc-cap.txt",
+    "uuid": "a05045e2-ef99-4967-9260-cbc1e873f2e1",
+    "session_id": "2b37464b-a6a9-5bd8-a37e-d227656c907a"
+  },
+  "control_response:success": {
+    "type": "control_response",
+    "response": {
+      "subtype": "success",
+      "request_id": "213479f0-7314-4463-9035-fcc5477a8c70",
+      "response": {
+        "behavior": "allow"
+      }
+    },
+    "uuid": "9da6c494-21b0-4021-bf57-23a9efb5933c"
+  }
+}

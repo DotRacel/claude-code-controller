@@ -1,0 +1,152 @@
+/**
+ * web-channel.ts — the browser-facing WebSocket channel (`/ws/client`).
+ *
+ * A phone connects with its credential (凭证A) via query or cookie; we authenticate it,
+ * push the session list it owns, and relay: web→child (user messages, permission answers,
+ * host controls) and child→web (the `claude.event` payloads it subscribed to). All routing
+ * is scoped to the credential — a socket can only touch sessions it owns.
+ */
+import crypto from 'node:crypto';
+import type { Server, IncomingMessage } from 'node:http';
+import type { Duplex } from 'node:stream';
+import type { Store } from './store.ts';
+import type { ServerEvent, ControllerServer } from './index.ts';
+
+const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+const acceptKey = (k: string) => crypto.createHash('sha1').update(k + WS_GUID).digest('base64');
+
+interface WebSock {
+  credential: string;
+  subscribed: string | null; // sessionId currently being viewed
+  socket: Duplex;
+  send: (obj: unknown) => void;
+}
+
+type WebApi = Pick<ControllerServer, 'sendUserMessage' | 'sendControlResponse' | 'sendControl'>;
+
+function cookieCredential(req: IncomingMessage): string | undefined {
+  const raw = req.headers.cookie;
+  if (!raw) return undefined;
+  for (const part of raw.split(';')) {
+    const [k, ...v] = part.trim().split('=');
+    if (k === 'ccc_credential') return decodeURIComponent(v.join('='));
+  }
+  return undefined;
+}
+
+export function attachWebChannel(server: Server, api: WebApi, store: Store) {
+  const socks = new Set<WebSock>();
+
+  server.on('upgrade', (req, socket, head) => {
+    const url = new URL(req.url || '/', 'http://x');
+    if (url.pathname !== '/ws/client') return; // not ours; leave it
+    const key = req.headers['sec-websocket-key'];
+    const credential = url.searchParams.get('credential') || cookieCredential(req);
+    if (typeof key !== 'string' || !credential) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n' + `Sec-WebSocket-Accept: ${acceptKey(key)}\r\n\r\n`);
+
+    const ws: WebSock = { credential, subscribed: null, socket: socket as Duplex, send: (obj) => sendFrame(socket as Duplex, JSON.stringify(obj)) };
+    socks.add(ws);
+    ws.send({ type: 'sessions', sessions: store.sessionsForCredential(credential).map((s) => store.view(s)) });
+
+    let buf: Buffer = head && head.length ? Buffer.from(head) : Buffer.alloc(0);
+    const parts: Buffer[] = [];
+    let op = 0;
+    socket.on('data', (chunk: Buffer) => {
+      buf = Buffer.concat([buf, chunk]);
+      for (;;) {
+        const f = takeFrame(buf);
+        if (!f) break;
+        buf = f.rest;
+        if (f.opcode === 0x8) { try { (socket as Duplex).end(); } catch {} return; }
+        if (f.opcode === 0x9) { sendPong(socket as Duplex, f.payload); continue; }
+        if (f.opcode === 0xa) continue;
+        if (f.opcode !== 0x0) op = f.opcode;
+        parts.push(f.payload);
+        if (f.fin) {
+          const full = parts.length === 1 ? parts[0] : Buffer.concat(parts);
+          parts.length = 0;
+          if (op === 0x1) handleMsg(ws, full.toString('utf8'));
+        }
+      }
+    });
+    const done = () => { socks.delete(ws); };
+    socket.on('close', done);
+    socket.on('error', done);
+  });
+
+  const owns = (ws: WebSock, sid: string) => store.sessions.get(sid)?.credential === ws.credential;
+
+  function handleMsg(ws: WebSock, text: string) {
+    let m: any;
+    try { m = JSON.parse(text); } catch { return; }
+    switch (m?.type) {
+      case 'subscribe':
+        if (owns(ws, m.sessionId)) {
+          ws.subscribed = m.sessionId;
+          ws.send({ type: 'history', sessionId: m.sessionId, events: store.historyFor(m.sessionId) }); // backfill transcript
+        }
+        break;
+      case 'user_message':
+        if (owns(ws, m.sessionId) && typeof m.text === 'string') api.sendUserMessage(m.sessionId, m.text);
+        break;
+      case 'permission_response':
+        if (owns(ws, m.sessionId)) api.sendControlResponse(m.sessionId, m.requestId, m.behavior === 'deny' ? 'deny' : 'allow');
+        break;
+      case 'control':
+        if (owns(ws, m.sessionId) && typeof m.subtype === 'string') api.sendControl(m.sessionId, m.subtype, m.extra || {});
+        break;
+    }
+  }
+
+  function pushList(credential: string) {
+    const list = store.sessionsForCredential(credential).map((s) => store.view(s));
+    for (const ws of socks) if (ws.credential === credential) ws.send({ type: 'sessions', sessions: list });
+  }
+
+  return {
+    /** Fan a ServerEvent out to the right web sockets. */
+    handleEvent(e: ServerEvent) {
+      if (e.type === 'claude.event') {
+        for (const ws of socks) if (ws.credential === e.credential && ws.subscribed === e.sessionId) ws.send({ type: 'event', sessionId: e.sessionId, payload: e.payload });
+      } else if ('credential' in e && (e as any).credential) {
+        pushList((e as any).credential); // env.register / session.create / ws.connect / ws.close / env.deregister
+      }
+    },
+  };
+}
+
+// ── minimal RFC6455 server-side framing ──
+function takeFrame(b: Buffer): { fin: boolean; opcode: number; payload: Buffer; rest: Buffer } | null {
+  if (b.length < 2) return null;
+  const fin = (b[0] & 0x80) !== 0;
+  const opcode = b[0] & 0x0f;
+  const masked = (b[1] & 0x80) !== 0;
+  let len = b[1] & 0x7f;
+  let off = 2;
+  if (len === 126) { if (b.length < 4) return null; len = b.readUInt16BE(2); off = 4; }
+  else if (len === 127) { if (b.length < 10) return null; len = Number(b.readBigUInt64BE(2)); off = 10; }
+  let mask: Buffer | null = null;
+  if (masked) { if (b.length < off + 4) return null; mask = b.subarray(off, off + 4); off += 4; }
+  if (b.length < off + len) return null;
+  let payload = b.subarray(off, off + len);
+  if (mask) { const out = Buffer.allocUnsafe(len); for (let i = 0; i < len; i++) out[i] = payload[i] ^ mask[i & 3]; payload = out; }
+  return { fin, opcode, payload, rest: b.subarray(off + len) };
+}
+function sendFrame(socket: Duplex, text: string): void {
+  const payload = Buffer.from(text, 'utf8');
+  const len = payload.length;
+  let header: Buffer;
+  if (len < 126) { header = Buffer.alloc(2); header[1] = len; }
+  else if (len < 0x10000) { header = Buffer.alloc(4); header[1] = 126; header.writeUInt16BE(len, 2); }
+  else { header = Buffer.alloc(10); header[1] = 127; header.writeBigUInt64BE(BigInt(len), 2); }
+  header[0] = 0x81;
+  try { socket.write(Buffer.concat([header, payload])); } catch {}
+}
+function sendPong(socket: Duplex, payload: Buffer): void {
+  try { socket.write(Buffer.concat([Buffer.from([0x8a, payload.length & 0x7f]), payload])); } catch {}
+}

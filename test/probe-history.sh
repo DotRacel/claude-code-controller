@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Does the REPL bridge replay the pre-/rc conversation to the data-plane? Establish a
+# distinctive word in the TUI BEFORE /rc, then check whether the server sees it after /rc.
+set -u
+cd /home/racel/claude-code-controller
+rm -f /tmp/ccc-smoke-server.log /tmp/ccc-interactive.log
+tmux kill-session -t cchist 2>/dev/null; sleep 0.5
+tmux new-session -d -s cchist -n cli -x 200 -y 50
+tmux new-window -t cchist -n srv "cd /home/racel/claude-code-controller; exec node test/smoke-server.ts >/tmp/srv-stdout.log 2>&1"
+sleep 3
+tmux send-keys -t cchist:cli "exec node src/control-cli.ts -i --server http://127.0.0.1:8790 --credential smoke-cred" Enter
+sleep 15
+# establish history BEFORE /rc
+tmux send-keys -t cchist:cli "Reply with exactly the word SECRETBANANA42 and nothing else." Enter
+sleep 42
+# now open remote control
+tmux send-keys -t cchist:cli "/rc" Enter
+sleep 10
+echo "=== pre-/rc history word present in server events? (count) ==="
+grep -c "SECRETBANANA42" /tmp/ccc-smoke-server.log
+echo "=== event payload types the server received ==="
+grep -oE '"type":"[a-z_]+"' /tmp/ccc-smoke-server.log | sort | uniq -c
+echo "=== first few claude.event lines ==="
+grep "claude.event" /tmp/ccc-smoke-server.log | head -6 | sed 's/.\{240\}/&…/'
+echo "=== TUI ==="; tmux capture-pane -t cchist:cli -p | grep -v "^$" | tail -8
+tmux kill-session -t cchist 2>/dev/null

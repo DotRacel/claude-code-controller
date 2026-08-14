@@ -1,0 +1,24 @@
+{
+  "name": "claude-code-controller",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Revive Claude Code Remote Control for BYOK users by injecting the Bun-compiled binary via inspector and re-hosting the /remote-control control-plane on a self-run server.",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "control-claude-code": "src/control-cli.ts"
+  },
+  "scripts": {
+    "server": "node src/server/main.ts",
+    "control": "node src/control-cli.ts",
+    "control-interactive": "node src/control-cli.ts -i",
+    "extract-anchors": "node src/injector/extract-anchors.ts",
+    "start": "node src/cli.ts",
+    "capture-events": "node test/capture-events.ts",
+    "probe-interactive": "node test/probe-interactive.ts",
+    "e2e-interactive": "bash test/e2e-interactive.sh",
+    "test": "node --test test/protocol.test.ts test/server.test.ts test/fixtures.test.ts test/transcript.test.ts"
+  }
+}
