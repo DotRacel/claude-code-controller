@@ -37,8 +37,25 @@ export function ChatView({ session, sock, connection, onBack, registerEvent, reg
   const [pinned, setPinned] = useState(true);
   const [announce, setAnnounce] = useState('');
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const screenRef = useRef<HTMLDivElement | null>(null);
+  const headerRef = useRef<HTMLDivElement | null>(null);
   const stateRef = useRef(state);
   stateRef.current = state;
+
+  // The header floats over the transcript (so the transcript can use the full screen, status-bar
+  // strip included), which means the transcript's top padding has to equal the header's height —
+  // and the connection banner makes that height change at runtime. Measured, not hard-coded.
+  useEffect(() => {
+    const head = headerRef.current;
+    const screen = screenRef.current;
+    if (!head || !screen) return;
+    const apply = () => screen.style.setProperty('--header-h', `${head.offsetHeight}px`);
+    apply();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(apply);
+    ro.observe(head);
+    return () => ro.disconnect();
+  }, []);
   // A reconnect re-subscribes and so backfills again (App.tsx); read the status through a ref so
   // that second backfill sees the current one, not whatever it was when the session was opened.
   const activeRef = useRef(false);
@@ -142,17 +159,21 @@ export function ChatView({ session, sock, connection, onBack, registerEvent, reg
     .filter(Boolean).join(' · ');
 
   return (
-    <div className="screen">
-      <div className="topbar">
-        <button className="icon-btn" aria-label="返回" onClick={onBack}><Back size={18} /></button>
-        <div className="topbar-title">
-          <div className="t1 ellipsis">Remote Control 会话</div>
-          <div className="t2 ellipsis">{session.machine || state.live.cwd || session.dir || '会话'}</div>
+    <div className="screen" ref={screenRef}>
+      {/* Floats over the transcript and frosts whatever scrolls beneath it, so the strip behind the
+          status bar / Dynamic Island is used instead of reserved. */}
+      <div className="header" ref={headerRef}>
+        <div className="topbar">
+          <button className="icon-btn" aria-label="返回" onClick={onBack}><Back size={18} /></button>
+          <div className="topbar-title">
+            <div className="t1 ellipsis">Remote Control 会话</div>
+            <div className="t2 ellipsis">{session.machine || state.live.cwd || session.dir || '会话'}</div>
+          </div>
+          <button className="icon-btn" aria-label="更多" onClick={() => setMenu(true)}><Dots size={18} /></button>
         </div>
-        <button className="icon-btn" aria-label="更多" onClick={() => setMenu(true)}><Dots size={18} /></button>
-      </div>
 
-      <Banner connection={connection} sessionOffline={session.status !== 'active'} machine={session.machine} onRetry={() => sock.reconnect()} />
+        <Banner connection={connection} sessionOffline={session.status !== 'active'} machine={session.machine} onRetry={() => sock.reconnect()} />
+      </div>
 
       <div
         className="scroll chat"

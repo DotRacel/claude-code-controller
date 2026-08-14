@@ -264,10 +264,44 @@ Three more things only the real installed app showed (reported on an iPhone 15 P
   ends normally, which read as a tap. It now cancels past 10px of travel, which also kills the
   pending long-press so a slow scroll cannot fire it either.
 
-What is **not** fixable from CSS: iOS 26 paints a Liquid Glass "scroll edge effect" behind the
+Two follow-ups came out of measuring the installed app instead of reasoning about it, and both
+reversed an earlier decision:
+
+- **The height unit is `dvh`, and `%` is only the no-dvh fallback.** On the device: `innerHeight`
+  932, `100dvh` 932, but `height: 100%` → **873 = 932 − 59**, exactly the top inset. Under
+  `viewport-fit=cover` with a translucent status bar WebKit resolves the initial containing block
+  *without* that inset, so a `%` chain is short by the height of the Dynamic Island and leaves it
+  as a dead band at the bottom. Chromium does not reproduce this even with
+  `Emulation.setSafeAreaInsetsOverride` — its ICB stays the full viewport — so the numbers are
+  written into the CSS comment, because only a device can catch a regression here.
+- **The composer bar reaches the screen edge**; the pill clears ~12px, not the full 34pt inset.
+  That inset is clearance for the home indicator's *gesture* area, not a margin a bottom bar must
+  float above; sitting 34pt up left a band of bare page background that read as a hole. The sheets
+  keep the full inset, since their buttons are the primary action.
+
+**The header floats and frosts.** `.header` (top bar + connection banner) is absolutely positioned
+over the transcript, which now starts at `y=0` and scrolls *under* it — so the 59pt behind the
+status bar and Dynamic Island is used rather than reserved, and content passing up there is blurred
+instead of colliding with the clock. This is
+[muffinman.io/blog/pwa-ios-status-bar-blur](https://muffinman.io/blog/pwa-ios-status-bar-blur)
+adapted rather than copied: that demo has no `viewport-fit=cover`, so its layout origin sits *below*
+the status bar and it can hide a blur strip at negative `y`; under `cover` `y=0` is the physical top
+(measured: ICB offset 0), so the strip simply lives at the top edge. Three details are load-bearing:
+the blurring `::before` needs `z-index: -1` (an absolutely positioned box paints in a later step
+than its in-flow siblings, so without it the frost covers the header's own title), it needs
+`pointer-events: none` (its fade tail hangs over the transcript), and the tail is a fixed 22px that
+the transcript's top padding clears — a percentage tail dimmed the first card at rest. `--header-h`
+is measured with a `ResizeObserver` in `ChatView`, because the banner changes the height at runtime.
+
+What is still **not** fixable from CSS: iOS 26 paints a Liquid Glass "scroll edge effect" behind the
 status bar, and there is no web-facing opt-out (`theme-color` is ignored in Safari 26; the native
-`scrollEdgeEffectStyle` is not exposed). All a page can do is control what gets sampled, which is
-why `.topbar` / `.topbar-lg` now paint an explicit opaque `--surface` rather than inheriting it.
+`scrollEdgeEffectStyle` is not exposed). All a page can do is control what gets sampled — which the
+frosted header now does deliberately.
+
+Because an installed PWA can sit on a stale service-worker cache indefinitely, the session menu
+prints `build <vite content hash> · 外壳 top→bottom / innerHeight`: one screenshot says which build
+a phone is actually running and whether its shell fills the viewport. Without it every layout
+report is ambiguous — `diag.html` can measure the browser, but not the app around it.
 
 `web/public/diag.html` (served at `/diag.html`, deliberately excluded from the service worker
 cache) is the device-side counterpart: open it from the home-screen icon and it reports

@@ -158,14 +158,54 @@ textarea { font: inherit; }
 .link { color: var(--accent-soft); font: 600 13px/1 var(--sans); padding: 6px; }
 
 /* ── screen scaffold ── */
-.screen { height: 100%; display: flex; flex-direction: column; overflow: hidden; }
+.screen { height: 100%; display: flex; flex-direction: column; overflow: hidden; position: relative; }
 .scroll { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+
+/* ── floating frosted header (chat screen) ──
+   The header floats over the transcript instead of pushing it down, so the transcript owns the
+   whole screen — including the strip behind the status bar and the Dynamic Island, which is
+   otherwise 59pt of dead background. Content that scrolls up there is frosted rather than
+   colliding with the clock and battery.
+
+   This is muffinman.io/blog/pwa-ios-status-bar-blur adapted, not copied: that demo has no
+   `viewport-fit=cover`, so its layout origin sits BELOW the status bar and it can hide a blur
+   strip at negative y. Under `cover` y=0 is the physical top of the screen (measured: ICB offset
+   0, inset-top 59), so negative y is genuinely off-screen and the strip simply lives at the top
+   edge. The blur is on a ::before with a masked bottom edge so it falls off softly instead of
+   ending on a hard line.
+
+   --header-h is measured in ChatView: the connection banner makes the height dynamic, and the
+   transcript's top padding has to match it. */
+.header { position: absolute; top: 0; left: 0; right: 0; z-index: 20; }
+.header::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  /* Taller than the header so the fade-out happens BELOW it: masking the header's own area would
+     leave the title sitting on unfrosted content. A fixed 22px tail rather than a percentage, so
+     the transcript's top padding can clear it exactly (a 50% tail dimmed the first card at rest). */
+  height: calc(100% + 22px);
+  /* z-index and pointer-events are both load-bearing. An absolutely positioned box paints in a
+     LATER step than its in-flow siblings, so without -1 the frost covers the header's own title
+     and buttons; and the part hanging below the header would otherwise swallow taps on the
+     transcript underneath. */
+  z-index: -1;
+  pointer-events: none;
+  -webkit-backdrop-filter: blur(16px) saturate(1.35);
+  backdrop-filter: blur(16px) saturate(1.35);
+  background: rgba(38, 38, 36, .78); /* --surface, kept translucent: opaque would hide the blur */
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent);
+}
 
 /* Safe areas use max(inset, gap), never inset + gap. Two reasons: with a real inset (a
    translucent status bar over the Dynamic Island) the extra gap is dead space stacked on top of
    space the island already took; and when iOS installs via the manifest instead of the apple-*
    meta tags the inset is 0, and max() still leaves the plain gap. Same idiom at the bottom. */
-.topbar { flex: none; display: flex; align-items: center; gap: 10px; background: var(--surface); padding: max(var(--safe-top), 8px) 16px 10px; }
+/* No background of its own: .header::before paints (and frosts) behind the whole header. */
+.topbar { flex: none; display: flex; align-items: center; gap: 10px; padding: max(var(--safe-top), 8px) 16px 10px; }
 .topbar-title { flex: 1; min-width: 0; text-align: center; }
 .topbar-title .t1 { font: 700 16px/1.2 var(--sans); }
 .topbar-title .t2 { font: 400 14px/1.3 var(--sans); color: var(--muted); margin-top: 1px; }
@@ -208,7 +248,10 @@ textarea { font: inherit; }
 .notify-banner { width: 100%; border-bottom: 1px solid var(--line); background: rgba(245, 244, 239, .04); color: var(--text-2); padding: 11px 14px; font-size: 13.5px; text-align: center; }
 
 /* ── transcript ── */
-.chat { padding: 6px var(--gutter) 12px; display: flex; flex-direction: column; gap: var(--msg-gap); }
+/* Top padding clears the floating header AND its 22px fade tail, so at rest the first card is
+   clean and only scrolling carries content under the frost. The fallback covers the first paint,
+   before ChatView has measured the header. */
+.chat { padding: calc(var(--header-h, 110px) + 26px) var(--gutter) 12px; display: flex; flex-direction: column; gap: var(--msg-gap); }
 /* A column flex item's automatic minimum size is its content — EXCEPT when it has
    `overflow: hidden`, where it becomes 0. Tool groups and question cards clip their corners,
    so once the transcript overflowed they were shrunk to their 2px borders. Nothing in a
@@ -316,7 +359,12 @@ textarea { font: inherit; }
 @keyframes cc-spin { to { transform: rotate(360deg) } }
 
 /* ── composer (1i) ── */
-.composer-wrap { flex: none; position: relative; padding: 0 var(--gutter) max(var(--safe-bottom), 10px); }
+/* The bar reaches the screen edge; the pill clears only the home indicator (~13pt), not the whole
+   34pt inset. The inset is clearance for the indicator's *gesture* area, not a margin a bottom bar
+   has to float above — sitting 34pt up left a band of bare page background that read as a hole.
+   The sheets keep the full inset: their buttons are the primary action and must not sit in the
+   gesture zone, whereas the composer's send button is a deliberate, accepted tradeoff. */
+.composer-wrap { flex: none; position: relative; padding: 0 var(--gutter) 12px; }
 .composer { border: 1px solid var(--line-2); border-radius: var(--radius-composer); background: var(--composer); padding: 13px 16px 9px; }
 .composer.focus { border-color: var(--line-3); }
 .composer-input {
