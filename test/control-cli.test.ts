@@ -5,7 +5,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseArgs, withDebugFlag } from '../src/control-cli.ts';
+import { parseArgs, withDebugFlag, alignProcessTitle } from '../src/control-cli.ts';
 
 test('interactive is the default; --headless opts out; -i stays accepted', () => {
   assert.equal(parseArgs([]).headless, false);
@@ -42,6 +42,27 @@ test('claude args that collide with our names pass through after --', () => {
 test('-h/--help before -- is ours', () => {
   assert.equal(parseArgs(['--help']).help, true);
   assert.equal(parseArgs(['-h']).help, true);
+});
+
+// tmux/screen name the window after the foreground process group's argv[0], which is this host,
+// not the claude child — so the host must wear claude's name for `#W` to track claude.
+test('alignProcessTitle renames the host to claude, and CCC_NO_PROCESS_TITLE opts out', () => {
+  const prevEnv = process.env.CCC_NO_PROCESS_TITLE;
+  const prevTitle = process.title;
+  try {
+    delete process.env.CCC_NO_PROCESS_TITLE;
+    assert.equal(alignProcessTitle(), 'claude');
+    assert.equal(process.title, 'claude');
+
+    process.title = 'ccc-test-host';
+    process.env.CCC_NO_PROCESS_TITLE = '1';
+    assert.equal(alignProcessTitle(), 'ccc-test-host');
+    assert.equal(process.title, 'ccc-test-host'); // untouched
+  } finally {
+    if (prevEnv === undefined) delete process.env.CCC_NO_PROCESS_TITLE;
+    else process.env.CCC_NO_PROCESS_TITLE = prevEnv;
+    process.title = prevTitle;
+  }
 });
 
 test('withDebugFlag only adds --debug under CCC_CLAUDE_DEBUG, and never twice', () => {

@@ -12,12 +12,16 @@
  *     `--model`, a prompt, …). `--` forces everything after it through, including `--help`.
  *   - FILE LOGS: injector + claude stderr go to a log directory (default
  *     ~/.config/claude-code-controller/logs), not the terminal — the TUI owns the terminal.
+ *   - TITLE PARITY: we rename our own process to `claude` so automatic-rename terminals
+ *     (tmux, screen) title the window the way a direct `claude` run does. See
+ *     alignProcessTitle().
  *
  * Usage:
  *   control-claude-code [--server <url>] [--credential <A>] [--cwd <dir>]
  *                       [--claude-bin <path>] [--log-dir <dir>] [--headless]
  *                       [claude args...] [-- claude args...]
- *   env: CCC_SERVER, CCC_CREDENTIAL, CCC_LOG_DIR, CLAUDE_BIN, CCC_VERBOSE, CCC_CLAUDE_DEBUG
+ *   env: CCC_SERVER, CCC_CREDENTIAL, CCC_LOG_DIR, CLAUDE_BIN, CCC_VERBOSE, CCC_CLAUDE_DEBUG,
+ *        CCC_NO_PROCESS_TITLE
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -43,6 +47,33 @@ export interface Cli {
   help: boolean;
   /** argv forwarded to claude verbatim, in the order the user wrote it. */
   claudeArgs: string[];
+}
+
+/** What an automatic-rename terminal should call this window — the same name a direct run gets. */
+const PROCESS_TITLE = 'claude';
+
+/**
+ * Rename this process to `claude` so terminals that title windows from the process show what
+ * the user actually launched.
+ *
+ * tmux (and screen) name a window after the FOREGROUND PROCESS GROUP leader's argv[0], read
+ * from /proc/<pgid>/cmdline. claude is our child and inherits our process group, so the leader
+ * is this host process and `#W` renders "node" — measured: window_name=[node] through us vs
+ * [claude] direct. claude's own OSC title still arrives, but tmux files it under pane_title
+ * (`#T`), which the common set-titles-string "#S / #W" never renders, so the terminal title
+ * stops tracking claude the moment the user launches through us.
+ *
+ * Renaming ourselves is the only fix available: putting the child in its own foreground group
+ * needs setpgid + tcsetpgrp, which Node does not expose, and `detached: true` calls setsid(),
+ * costing claude its controlling terminal (no SIGWINCH → a TUI that never reflows on resize).
+ *
+ * Kept short on purpose — the new title must fit the original argv block or libuv truncates it.
+ * CCC_NO_PROCESS_TITLE=1 keeps the real argv, so `ps` still shows the controller command.
+ */
+export function alignProcessTitle(title: string = PROCESS_TITLE): string {
+  if (process.env.CCC_NO_PROCESS_TITLE) return process.title;
+  try { process.title = title; } catch { /* platform refused it; the title is cosmetic */ }
+  return process.title;
 }
 
 function die(msg: string): never {
@@ -111,7 +142,8 @@ function printHelp() {
   -i, --interactive     交互式（已是默认，仅作兼容）
   -h, --help            显示本帮助
 
-环境变量: CCC_SERVER CCC_CREDENTIAL CCC_LOG_DIR CLAUDE_BIN CCC_VERBOSE CCC_CLAUDE_DEBUG`);
+环境变量: CCC_SERVER CCC_CREDENTIAL CCC_LOG_DIR CLAUDE_BIN CCC_VERBOSE CCC_CLAUDE_DEBUG
+          CCC_NO_PROCESS_TITLE=1  不把宿主进程改名为 claude（tmux/screen 的窗口名会显示 node）`);
 }
 
 function loadOrCreateCredential(explicit?: string): { credential: string; generated: boolean; file: string } {
@@ -198,6 +230,8 @@ async function main() {
 
   const logger = createLogger(logDir);
   logger.log(`[cli] argv=${JSON.stringify(process.argv.slice(2))}`);
+  // Before anything long-running: tmux/screen read our argv for the window name (see above).
+  logger.log(`[cli] process.title=${JSON.stringify(alignProcessTitle())}`);
   logger.log(`[cli] mode=${cli.headless ? 'headless' : 'interactive'} server=${serverUrl} cwd=${cwd} bin=${claudeBin} claudeArgs=${JSON.stringify(cli.claudeArgs)}`);
 
   if (generated) {

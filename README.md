@@ -188,6 +188,17 @@ symlinked for `tail -f`; the newest 20 runs are kept. If claude exits nonzero it
 echoed to the terminal so a bad forwarded argument stays visible. `CCC_CLAUDE_DEBUG=1` adds
 claude's own `--debug` (also to `~/.claude/debug/<uuid>.txt`).
 
+**Window titles under tmux / screen.** The host renames itself to `claude` (`process.title`) so
+an automatic-rename terminal titles the window the way a direct `claude` run does. tmux takes the
+window name from the *foreground process group leader's* `argv[0]` (`/proc/<pgid>/cmdline`), and
+claude — our child — inherits our process group, so without the rename `#W` reads `node`
+(measured) while claude's own OSC title only reaches tmux's `pane_title` (`#T`), which the common
+`set-titles-string "#S / #W"` never renders. Putting the child in its own foreground group is not
+an option: that needs `setpgid` + `tcsetpgrp` (no Node API), and `detached: true` calls `setsid()`,
+which would cost claude its controlling terminal — no `SIGWINCH`, so the TUI would stop reflowing
+on resize. `CCC_NO_PROCESS_TITLE=1` keeps the real argv when you'd rather see the controller in
+`ps`.
+
 ## Persistence — PostgreSQL (fifth version) — DONE, verified
 
 The server is meant to serve many users, so state lives in PostgreSQL. Three tables
