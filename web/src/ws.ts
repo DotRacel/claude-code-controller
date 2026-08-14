@@ -51,7 +51,22 @@ function clientInfo(): string {
     document.body.appendChild(probe);
     const icb = Math.round(probe.getBoundingClientRect().height);
     probe.remove();
-    return `build=${build} mode=${mode} win=${innerWidth}x${innerHeight} shell=${r ? `${Math.round(r.top)}→${Math.round(r.bottom)}` : '?'} icb=${icb}`;
+    // Insets distinguish the two ways iOS can install a web app: honouring the apple-* meta tags
+    // gives a translucent status bar (full-height window, non-zero top inset), while the manifest
+    // path gives an opaque one (shorter window, zero top inset) and the status-bar strip is then
+    // outside the web view entirely.
+    const inset = (side: string) => {
+      const d = document.createElement('div');
+      d.style.cssText = `position:fixed;top:0;left:0;width:0;height:0;padding-${side}:env(safe-area-inset-${side},0px)`;
+      document.body.appendChild(d);
+      const v = getComputedStyle(d).getPropertyValue(`padding-${side}`);
+      d.remove();
+      return parseFloat(v) || 0;
+    };
+    const comp = document.querySelector('.composer')?.getBoundingClientRect();
+    return `build=${build} mode=${mode} win=${innerWidth}x${innerHeight} shell=${r ? `${Math.round(r.top)}→${Math.round(r.bottom)}` : '?'} icb=${icb}`
+      + ` insets=${inset('top')}/${inset('bottom')}`
+      + (comp ? ` composerBottom=${Math.round(comp.bottom)} gap=${Math.round(innerHeight - comp.bottom)}` : '');
   } catch {
     return 'info-failed';
   }
