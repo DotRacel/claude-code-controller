@@ -13,12 +13,12 @@
   "scripts": {
     "server": "node src/server/main.ts",
     "control": "node src/control-cli.ts",
-    "control-interactive": "node src/control-cli.ts -i",
+    "control-headless": "node src/control-cli.ts --headless",
     "extract-anchors": "node src/injector/extract-anchors.ts",
     "start": "node src/cli.ts",
     "capture-events": "node test/capture-events.ts",
     "probe-interactive": "node test/probe-interactive.ts",
     "e2e-interactive": "bash test/e2e-interactive.sh",
-    "test": "node --test test/protocol.test.ts test/server.test.ts test/fixtures.test.ts test/transcript.test.ts"
+    "test": "node --test test/protocol.test.ts test/server.test.ts test/fixtures.test.ts test/transcript.test.ts test/pwa.test.ts test/push-event.test.ts test/control-cli.test.ts"
   }
 }

@@ -1,107 +1,311 @@
 #!/usr/bin/env -S node
 /**
- * control-cli.ts — `control-claude-code`: launch a gate-rebound `claude remote-control`
- * whose bridge (control-plane + data-plane) points at the hosted central server, owned by
- * the user's credential (凭证A). No local server, no in-process conversation — the phone
- * drives it over the web. Keeps claude alive until Ctrl-C.
+ * control-cli.ts — `control-claude-code`: launch a gate-rebound `claude` whose bridge
+ * (control-plane + data-plane) points at the user's own server, owned by their credential
+ * (凭证A).
+ *
+ * Defaults, by design:
+ *   - INTERACTIVE: a real claude TUI with the `/rc` gates rebound. The user works normally and
+ *     types `/rc` when they want the session on their phone. `--headless` selects the old
+ *     `claude remote-control` path (no TUI, phone-only driving).
+ *   - PASSTHROUGH: any argument we don't own is forwarded to claude verbatim (`--resume`, `-c`,
+ *     `--model`, a prompt, …). `--` forces everything after it through, including `--help`.
+ *   - FILE LOGS: injector + claude stderr go to a log directory (default
+ *     ~/.config/claude-code-controller/logs), not the terminal — the TUI owns the terminal.
  *
  * Usage:
- *   control-claude-code [--credential <A>] [--server <url>] [--cwd <dir>]
- *   env: CCC_CREDENTIAL, CCC_SERVER, CLAUDE_BIN
+ *   control-claude-code [--server <url>] [--credential <A>] [--cwd <dir>]
+ *                       [--claude-bin <path>] [--log-dir <dir>] [--headless]
+ *                       [claude args...] [-- claude args...]
+ *   env: CCC_SERVER, CCC_CREDENTIAL, CCC_LOG_DIR, CLAUDE_BIN, CCC_VERBOSE, CCC_CLAUDE_DEBUG
  */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { launchWithGatesRebound, launchInteractiveWithGatesRebound } from './injector/gate-rebind.ts';
 
-function parseArgs(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
+const CONFIG_DIR = path.join(os.homedir(), '.config', 'claude-code-controller');
+const DEFAULT_LOG_DIR = path.join(CONFIG_DIR, 'logs');
+const KEEP_RUNS = 20; // how many past runs' logs to keep in the log dir
+
+/** Controller flags that take a value; everything else falls through to claude. */
+const VALUE_FLAGS = new Set(['server', 'credential', 'cwd', 'claude-bin', 'log-dir']);
+
+export interface Cli {
+  server?: string;
+  credential?: string;
+  cwd?: string;
+  claudeBin?: string;
+  logDir?: string;
+  headless: boolean;
+  help: boolean;
+  /** argv forwarded to claude verbatim, in the order the user wrote it. */
+  claudeArgs: string[];
+}
+
+function die(msg: string): never {
+  console.error(`control-claude-code: ${msg}\n试试 control-claude-code --help`);
+  process.exit(2);
+}
+
+/**
+ * Parse only our own flags and forward the rest. Deliberately conservative: a value flag whose
+ * value is missing (or looks like another flag) is an error rather than a silent swallow of a
+ * claude argument.
+ */
+export function parseArgs(argv: string[]): Cli {
+  const cli: Cli = { headless: false, help: false, claudeArgs: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a.startsWith('--')) out[a.slice(2)] = argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[++i] : 'true';
+    if (a === '--') { cli.claudeArgs.push(...argv.slice(i + 1)); break; }
+    if (a === '-h' || a === '--help') { cli.help = true; continue; }
+    if (a === '-i') continue; // compat: interactive is the default now
+
+    const m = /^--([^=]+)(?:=([\s\S]*))?$/.exec(a);
+    if (m) {
+      const name = m[1];
+      if (VALUE_FLAGS.has(name)) {
+        let v = m[2];
+        if (v === undefined) {
+          const next = argv[i + 1];
+          if (next === undefined || next.startsWith('-')) die(`--${name} 需要一个值`);
+          v = argv[++i];
+        }
+        if (name === 'server') cli.server = v;
+        else if (name === 'credential') cli.credential = v;
+        else if (name === 'cwd') cli.cwd = v;
+        else if (name === 'claude-bin') cli.claudeBin = v;
+        else if (name === 'log-dir') cli.logDir = v;
+        continue;
+      }
+      if (name === 'headless' || name === 'no-interactive') { cli.headless = true; continue; }
+      if (name === 'interactive') { cli.headless = false; continue; }
+    }
+    cli.claudeArgs.push(a); // not ours → claude's
   }
-  return out;
+  return cli;
+}
+
+function printHelp() {
+  console.log(`control-claude-code — 用手机远程控制本机的 claude（BYOK 也能用）
+
+用法:
+  control-claude-code [控制器选项] [claude 的参数...]
+
+默认启动交互式 claude（真实 TUI）并注入远程控制；在 TUI 里输入 \x1b[1m/rc\x1b[0m 会话即出现在手机上。
+控制器不认识的参数会原样转发给 claude:
+  control-claude-code --resume                  # 选一个历史会话继续
+  control-claude-code -c                        # 继续最近一次会话
+  control-claude-code --model opus "修下这个 bug"
+  control-claude-code -- --help                 # -- 之后的一切都交给 claude（包括 --help）
+
+控制器选项:
+  --server <url>        控制器服务器地址（默认 $CCC_SERVER 或 http://127.0.0.1:8787）
+  --credential <A>      凭证A（默认 $CCC_CREDENTIAL，或 ${path.join(CONFIG_DIR, 'credential')}）
+  --cwd <dir>           claude 的工作目录（默认当前目录）
+  --claude-bin <path>   claude 可执行文件（默认 $CLAUDE_BIN 或 claude）
+  --log-dir <dir>       日志目录（默认 $CCC_LOG_DIR 或 ${DEFAULT_LOG_DIR}）
+  --headless            无头模式: 注入 \`claude remote-control\`，只由手机驱动，不占用终端
+  -i, --interactive     交互式（已是默认，仅作兼容）
+  -h, --help            显示本帮助
+
+环境变量: CCC_SERVER CCC_CREDENTIAL CCC_LOG_DIR CLAUDE_BIN CCC_VERBOSE CCC_CLAUDE_DEBUG`);
 }
 
 function loadOrCreateCredential(explicit?: string): { credential: string; generated: boolean; file: string } {
-  const dir = path.join(os.homedir(), '.config', 'claude-code-controller');
-  const file = path.join(dir, 'credential');
+  const file = path.join(CONFIG_DIR, 'credential');
   if (explicit) return { credential: explicit, generated: false, file };
   if (fs.existsSync(file)) return { credential: fs.readFileSync(file, 'utf8').trim(), generated: false, file };
   const credential = 'ccc_' + crypto.randomBytes(24).toString('base64url');
-  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(CONFIG_DIR, { recursive: true });
   fs.writeFileSync(file, credential, { mode: 0o600 });
   return { credential, generated: true, file };
 }
 
 const ts = () => new Date().toISOString().slice(11, 23);
 
+const stampNow = () => {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+};
+
+interface Logger {
+  dir: string;
+  file: string;
+  claudeFile: string;
+  log: (m: string) => void;
+  appendClaude: (s: string) => void;
+}
+
+const RUN_FILE_RE = /^ccc-\d{8}-\d{6}-\d+\.(?:claude\.)?log$/;
+
+/** Keep the newest KEEP_RUNS runs; only ever touches files we created (RUN_FILE_RE). */
+function pruneRuns(dir: string) {
+  try {
+    const runs = new Map<string, string[]>();
+    for (const name of fs.readdirSync(dir)) {
+      if (!RUN_FILE_RE.test(name)) continue;
+      const key = name.replace(/\.(?:claude\.)?log$/, '');
+      const list = runs.get(key) ?? [];
+      list.push(name);
+      runs.set(key, list);
+    }
+    const keys = [...runs.keys()].sort(); // stamped names sort chronologically
+    for (const key of keys.slice(0, Math.max(0, keys.length - KEEP_RUNS)))
+      for (const name of runs.get(key)!) { try { fs.rmSync(path.join(dir, name)); } catch {} }
+  } catch {}
+}
+
+const hasContent = (f: string) => { try { return fs.statSync(f).size > 0; } catch { return false; } };
+
+function createLogger(dir: string): Logger {
+  fs.mkdirSync(dir, { recursive: true });
+  pruneRuns(dir);
+  const base = `ccc-${stampNow()}-${process.pid}`;
+  const file = path.join(dir, base + '.log');
+  const claudeFile = path.join(dir, base + '.claude.log');
+  const append = (f: string, s: string) => { try { fs.appendFileSync(f, s); } catch {} };
+  for (const f of [file, claudeFile]) append(f, ''); // create both so the symlinks never dangle
+  // latest.log / latest.claude.log point at this run, so `tail -f` needs no stamp.
+  for (const [link, target] of [['latest.log', file], ['latest.claude.log', claudeFile]] as const) {
+    const p = path.join(dir, link);
+    try { fs.rmSync(p, { force: true }); fs.symlinkSync(target, p); } catch {}
+  }
+  return { dir, file, claudeFile, log: (m) => append(file, `${ts()} ${m}\n`), appendClaude: (s) => append(claudeFile, s) };
+}
+
+interface RunCtx {
+  claudeBin: string;
+  cwd: string;
+  serverUrl: string;
+  credential: string;
+  claudeArgs: string[];
+  logger: Logger;
+}
+
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
-  const serverUrl = (args.server || process.env.CCC_SERVER || 'http://127.0.0.1:8787').replace(/\/+$/, '');
-  const cwd = args.cwd || process.cwd();
-  const claudeBin = args['claude-bin'] || process.env.CLAUDE_BIN || 'claude';
-  const { credential, generated, file } = loadOrCreateCredential(args.credential || process.env.CCC_CREDENTIAL);
+  const cli = parseArgs(process.argv.slice(2));
+  if (cli.help) { printHelp(); return; }
+
+  const serverUrl = (cli.server || process.env.CCC_SERVER || 'http://127.0.0.1:8787').replace(/\/+$/, '');
+  const cwd = path.resolve(cli.cwd || process.cwd());
+  const claudeBin = cli.claudeBin || process.env.CLAUDE_BIN || 'claude';
+  const logDir = path.resolve(cli.logDir || process.env.CCC_LOG_DIR || DEFAULT_LOG_DIR);
+  const { credential, generated, file } = loadOrCreateCredential(cli.credential || process.env.CCC_CREDENTIAL);
+
+  const logger = createLogger(logDir);
+  logger.log(`[cli] argv=${JSON.stringify(process.argv.slice(2))}`);
+  logger.log(`[cli] mode=${cli.headless ? 'headless' : 'interactive'} server=${serverUrl} cwd=${cwd} bin=${claudeBin} claudeArgs=${JSON.stringify(cli.claudeArgs)}`);
 
   if (generated) {
     console.log(`\n🔑 Generated a new credential (saved to ${file}):\n\n    ${credential}\n\n   Enter it in the web app to see this machine's sessions. Keep it safe — losing it loses access.\n`);
   }
-  const interactive = args.interactive === 'true' || process.argv.slice(2).includes('-i');
-  if (interactive) return runInteractive({ claudeBin, cwd, serverUrl, credential });
 
-  console.log(`${ts()} control-claude-code → ${serverUrl}  cred=${credential.slice(0, 10)}…  cwd=${cwd}`);
-  const h = await launchWithGatesRebound({
-    claudeBin,
-    cwd,
-    bridgeBaseUrl: serverUrl,
-    bridgeToken: credential,
-    log: (m) => process.env.CCC_VERBOSE && console.log(`${ts()} ${m}`),
-    onStderr: (s) => process.stderr.write(`\x1b[2m[claude] ${s}\x1b[0m`),
-  });
-
-  console.log(`${ts()} claude remote-control launched — bridge redirected to your server.`);
-  console.log(`${ts()} Open the web app on your phone, enter the credential, and your session will appear. Ctrl-C to stop.`);
-
-  const stop = () => { try { h.kill(); } catch {} process.exit(0); };
-  process.on('SIGINT', stop);
-  process.on('SIGTERM', stop);
-  // Keep the process alive; exit if claude dies.
-  const iv = setInterval(() => { if (h.isDead()) { console.log(`${ts()} claude exited.`); clearInterval(iv); process.exit(0); } }, 1000);
+  const ctx: RunCtx = { claudeBin, cwd, serverUrl, credential, claudeArgs: cli.claudeArgs, logger };
+  try {
+    await (cli.headless ? runHeadless(ctx) : runInteractive(ctx));
+  } catch (e: any) {
+    logger.log(`[cli] fatal: ${e?.stack || e}`);
+    console.error(`\n${ts()} 启动失败: ${e?.message ?? e}`);
+    if (e?.code === 'ENOENT') console.error(`${ts()} 找不到 claude 可执行文件 — 用 --claude-bin <路径> 或设置 CLAUDE_BIN`);
+    console.error(`${ts()} 详细日志: ${logger.file}${hasContent(logger.claudeFile) ? ' / ' + logger.claudeFile : ''}`);
+    process.exit(1);
+  }
 }
 
 /**
- * Interactive mode (`-i` / `--interactive`): launch the claude TUI with the `/rc` gates
- * rebound. The user works normally; when they want remote control they type `/rc`, the REPL
- * bridge connects our server, and the session appears on their phone. The TUI owns the
- * terminal (stdio inherit), so injector logs go to a file and we don't intercept Ctrl-C.
+ * Interactive mode (default): launch the claude TUI with the `/rc` gates rebound. The user
+ * works normally; typing `/rc` connects the REPL bridge to our server and the session appears
+ * on their phone. The TUI owns the terminal (stdio inherit), so injector logs go to the log
+ * dir and we don't intercept Ctrl-C. claude's stderr is piped (never left unread — an unread
+ * pipe would stall claude once its buffer filled) into the run's .claude.log, and its tail is
+ * echoed if claude exits badly, so forwarded-argument mistakes stay visible.
  */
-async function runInteractive(o: { claudeBin: string; cwd: string; serverUrl: string; credential: string }) {
-  const logFile = path.join(os.tmpdir(), 'ccc-interactive.log');
-  const log = (m: string) => { try { fs.appendFileSync(logFile, `${ts()} ${m}\n`); } catch {} };
-  console.log(`${ts()} 启动交互式 claude + 注入 remote control 支持…  bridge → ${o.serverUrl}  cred=${o.credential.slice(0, 10)}…`);
-  console.log(`${ts()} 注入日志: ${logFile}`);
-  const dbgFile = '/tmp/ccc-claude-debug.log';
-  if (process.env.CCC_CLAUDE_DEBUG) { try { fs.writeFileSync(dbgFile, ''); } catch {} }
+async function runInteractive(o: RunCtx) {
+  const { logger } = o;
+  console.log(`${ts()} 启动交互式 claude + 注入 remote control 支持…  bridge → ${o.serverUrl}  cred=${o.credential.slice(0, 10)}…  cwd=${o.cwd}`);
+  if (o.claudeArgs.length) console.log(`${ts()} 转发给 claude 的参数: ${o.claudeArgs.join(' ')}`);
+  console.log(`${ts()} 日志: ${logger.file}`);
+
+  let stderrTail = '';
   const h = await launchInteractiveWithGatesRebound({
     claudeBin: o.claudeBin,
     cwd: o.cwd,
     bridgeBaseUrl: o.serverUrl,
     bridgeToken: o.credential,
     stdio: 'inherit',
-    extraArgs: process.env.CCC_CLAUDE_DEBUG ? ['--debug'] : [],
-    log,
-    onStderr: process.env.CCC_CLAUDE_DEBUG ? (s) => { try { fs.appendFileSync(dbgFile, s); } catch {} } : undefined,
+    extraArgs: withDebugFlag(o.claudeArgs),
+    log: logger.log,
+    onStderr: (s) => { logger.appendClaude(s); stderrTail = (stderrTail + s).slice(-4000); },
   });
   const okN = h.reports.filter((r) => r.located).length;
   console.log(`${ts()} 就绪 — ${okN}/${h.reports.length} gates rebound。进入 claude；需要远程时输入 \x1b[1m/rc\x1b[0m，会话即出现在手机上。\n`);
+
+  let code: number | null = null;
+  h.child.on('exit', (c) => { code = c; });
   // The TUI now owns the terminal. Don't intercept Ctrl-C — let claude handle it; we exit when it does.
   process.on('SIGINT', () => {});
   await new Promise<void>((resolve) => {
     const iv = setInterval(() => { if (h.isDead()) { clearInterval(iv); resolve(); } }, 500);
   });
+  logger.log(`[cli] claude exited code=${code}`);
+  if (code) {
+    console.error(`\n${ts()} claude 退出 (code=${code})。`);
+    if (stderrTail.trim()) console.error(`\x1b[2m${stderrTail.trim()}\x1b[0m`);
+    console.error(`${ts()} 完整日志: ${logger.file}${hasContent(logger.claudeFile) ? ' / ' + logger.claudeFile : ''}`);
+    process.exit(code);
+  }
   console.log(`\n${ts()} claude 已退出。`);
   process.exit(0);
 }
 
-main().catch((e) => { console.error('[control-cli] fatal:', e); process.exit(1); });
+/**
+ * Headless mode (`--headless`): inject `claude remote-control`, which spawns the worker child;
+ * nothing runs in this terminal and the phone drives everything. Keeps claude alive until
+ * Ctrl-C.
+ */
+async function runHeadless(o: RunCtx) {
+  const { logger } = o;
+  console.log(`${ts()} control-claude-code (headless) → ${o.serverUrl}  cred=${o.credential.slice(0, 10)}…  cwd=${o.cwd}`);
+  if (o.claudeArgs.length) console.log(`${ts()} 转发给 claude remote-control 的参数: ${o.claudeArgs.join(' ')}`);
+  console.log(`${ts()} 日志: ${logger.file}`);
+
+  const h = await launchWithGatesRebound({
+    claudeBin: o.claudeBin,
+    cwd: o.cwd,
+    bridgeBaseUrl: o.serverUrl,
+    bridgeToken: o.credential,
+    extraArgs: withDebugFlag(o.claudeArgs),
+    log: (m) => { logger.log(m); if (process.env.CCC_VERBOSE) console.log(`${ts()} ${m}`); },
+    onStderr: (s) => { logger.appendClaude(s); if (process.env.CCC_VERBOSE) process.stderr.write(`\x1b[2m[claude] ${s}\x1b[0m`); },
+  });
+
+  const okN = h.reports.filter((r) => r.located && r.reboundOk !== false).length;
+  console.log(`${ts()} claude remote-control launched — bridge redirected to your server (${okN}/${h.reports.length} gates).`);
+  console.log(`${ts()} Open the web app on your phone, enter the credential, and your session will appear. Ctrl-C to stop.`);
+
+  const stop = () => { try { h.kill(); } catch {} process.exit(0); };
+  process.on('SIGINT', stop);
+  process.on('SIGTERM', stop);
+  // Keep the process alive; exit if claude dies.
+  const iv = setInterval(() => {
+    if (h.isDead()) {
+      clearInterval(iv);
+      console.log(`${ts()} claude exited — 日志: ${logger.file}${hasContent(logger.claudeFile) ? ' / ' + logger.claudeFile : ''}`);
+      process.exit(0);
+    }
+  }, 1000);
+}
+
+/** CCC_CLAUDE_DEBUG=1 adds claude's own --debug (unless the user already passed it). */
+export function withDebugFlag(args: string[]): string[] {
+  if (!process.env.CCC_CLAUDE_DEBUG) return args;
+  return args.some((a) => a === '--debug' || a.startsWith('--debug=')) ? args : [...args, '--debug'];
+}
+
+// Only run when invoked as the CLI — the arg parsing above is imported by tests.
+const invokedDirectly = !!process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (invokedDirectly) main().catch((e) => { console.error('[control-cli] fatal:', e); process.exit(1); });

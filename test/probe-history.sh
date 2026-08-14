@@ -3,12 +3,12 @@
 # distinctive word in the TUI BEFORE /rc, then check whether the server sees it after /rc.
 set -u
 cd /home/racel/claude-code-controller
-rm -f /tmp/ccc-smoke-server.log /tmp/ccc-interactive.log
+rm -rf /tmp/ccc-logs; rm -f /tmp/ccc-smoke-server.log
 tmux kill-session -t cchist 2>/dev/null; sleep 0.5
 tmux new-session -d -s cchist -n cli -x 200 -y 50
 tmux new-window -t cchist -n srv "cd /home/racel/claude-code-controller; exec node test/smoke-server.ts >/tmp/srv-stdout.log 2>&1"
 sleep 3
-tmux send-keys -t cchist:cli "exec node src/control-cli.ts -i --server http://127.0.0.1:8790 --credential smoke-cred" Enter
+tmux send-keys -t cchist:cli "exec node src/control-cli.ts --log-dir /tmp/ccc-logs --server http://127.0.0.1:8790 --credential smoke-cred" Enter
 sleep 15
 # establish history BEFORE /rc
 tmux send-keys -t cchist:cli "Reply with exactly the word SECRETBANANA42 and nothing else." Enter
