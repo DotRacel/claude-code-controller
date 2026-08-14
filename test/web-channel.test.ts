@@ -15,7 +15,6 @@ import assert from 'node:assert/strict';
 import { createControllerServer, type ControllerServer } from '../src/server/index.ts';
 import { attachWebChannel } from '../src/server/web-channel.ts';
 
-const CRED = 'test-cred-WEB';
 const auth = (t: string) => ({ Authorization: `Bearer ${t}` });
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -31,7 +30,10 @@ async function withLoop(fn: (ctx: {
   const server = await createControllerServer({ onEvent: (e) => web.handleEvent(e) });
   const web = attachWebChannel(server.server, server, server.store);
   try {
-    const s = await server.store.createReplSession(CRED, { dir: '/proj', title: 'box' });
+    // /ws/client only accepts a token that belongs to an account, so the session's owner has
+    // to be a real one.
+    const cred = (await server.store.createUser('webtester', 'pw-12345678'))!.token;
+    const s = await server.store.createReplSession(cred, { dir: '/proj', title: 'box' });
     const ac = new AbortController();
     const sse = await fetch(`${server.baseUrl}/v1/code/sessions/${s.id}/worker/events/stream`, { headers: auth(s.ingressToken), signal: ac.signal });
     const chunks: string[] = [];
@@ -40,7 +42,7 @@ async function withLoop(fn: (ctx: {
     void (async () => { for (;;) { const { done, value } = await reader.read(); if (done) break; chunks.push(dec.decode(value)); } })().catch(() => {});
 
     let sessions: any[] = [];
-    const ws = new WebSocket(`ws://127.0.0.1:${server.port}/ws/client?credential=${CRED}`);
+    const ws = new WebSocket(`ws://127.0.0.1:${server.port}/ws/client?credential=${cred}`);
     ws.onmessage = (e) => { const m = JSON.parse(String(e.data)); if (m.type === 'sessions') sessions = m.sessions; };
     await new Promise<void>((res, rej) => { ws.onopen = () => res(); ws.onerror = () => rej(new Error('ws')); });
     await sleep(50);

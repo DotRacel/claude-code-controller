@@ -1,10 +1,11 @@
 /**
  * web-channel.ts — the browser-facing WebSocket channel (`/ws/client`).
  *
- * A phone connects with its credential (凭证A) via query or cookie; we authenticate it,
- * push the session list it owns, and relay: web→child (user messages, permission answers,
- * host controls) and child→web (the `claude.event` payloads it subscribed to). All routing
- * is scoped to the credential — a socket can only touch sessions it owns.
+ * A phone connects with its credential (凭证A) via query or cookie; we authenticate it against
+ * the account registry, push the session list it owns, and relay: web→child (user messages,
+ * permission answers, host controls) and child→web (the `claude.event` payloads it subscribed
+ * to). All routing is scoped to the credential — a socket can only touch sessions it owns, and
+ * a token belonging to no account never gets a socket at all.
  */
 import crypto from 'node:crypto';
 import type { Server, IncomingMessage } from 'node:http';
@@ -68,7 +69,9 @@ export function attachWebChannel(server: Server, api: WebApi, store: Store) {
     if (url.pathname !== '/ws/client') return; // not ours; leave it
     const key = req.headers['sec-websocket-key'];
     const credential = url.searchParams.get('credential') || cookieCredential(req);
-    if (typeof key !== 'string' || !credential) {
+    // store.userByToken is a synchronous cache read precisely so this check fits here — an
+    // upgrade handler has nowhere to await.
+    if (typeof key !== 'string' || !credential || !store.userByToken(credential)) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
       return;

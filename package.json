@@ -24,7 +24,7 @@
     "db:up": "docker compose up -d db",
     "db:down": "docker compose down",
     "db:psql": "docker compose exec db psql -U ccc -d ccc",
-    "test": "node --test test/protocol.test.ts test/server.test.ts test/fixtures.test.ts test/transcript.test.ts test/model.test.ts test/web-channel.test.ts test/pwa.test.ts test/push-event.test.ts test/control-cli.test.ts test/db.test.ts",
+    "test": "node --test test/protocol.test.ts test/server.test.ts test/auth.test.ts test/fixtures.test.ts test/transcript.test.ts test/model.test.ts test/web-channel.test.ts test/pwa.test.ts test/push-event.test.ts test/control-cli.test.ts test/db.test.ts",
     "render-history": "node test/render-history.ts",
     "ui-preview": "node test/ui-preview.ts",
     "ui-shot": "node test/ui-shot.ts"

@@ -16,6 +16,15 @@ import pg from 'pg';
 
 export type Pool = pg.Pool;
 
+/** An account row. `token` is the credential (凭证A) every other table is partitioned by. */
+export interface UserRow {
+  username: string;
+  passwordHash: string;
+  token: string;
+  createdAt: number;
+  lastLogin?: number;
+}
+
 /** Rows as store.ts's in-memory records want them (camelCase, epoch millis). */
 export interface EnvRow {
   id: string;
@@ -71,6 +80,38 @@ export async function ensureSchema(pool: Pool, schema?: string): Promise<void> {
 
 const ms = (v: unknown): number => (v instanceof Date ? v.getTime() : Number(v) || Date.now());
 const opt = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
+
+/**
+ * Every account, with no time window — unlike sessions, an account never ages out: a token
+ * issued years ago must still authenticate, and store.userByToken() is a synchronous read off
+ * this cache (web-channel's upgrade handler cannot await).
+ */
+export async function loadUsers(pool: Pool): Promise<UserRow[]> {
+  const r = await pool.query(`select username, password_hash, token, created_at, last_login from users`);
+  return r.rows.map((u) => ({
+    username: u.username, passwordHash: u.password_hash, token: u.token,
+    createdAt: ms(u.created_at), lastLogin: u.last_login ? ms(u.last_login) : undefined,
+  }));
+}
+
+/**
+ * Register an account. Returns false when the username is taken — the uniqueness decision is
+ * PG's, not the read cache's, so two simultaneous registrations cannot both win.
+ */
+export async function insertUser(pool: Pool, u: UserRow): Promise<boolean> {
+  const r = await pool.query(
+    `insert into users (username, password_hash, token, created_at)
+     values ($1,$2,$3, to_timestamp($4/1000.0))
+     on conflict (username) do nothing
+     returning username`,
+    [u.username, u.passwordHash, u.token, u.createdAt],
+  );
+  return r.rowCount === 1;
+}
+
+export async function updateLastLogin(pool: Pool, username: string, at: number): Promise<void> {
+  await pool.query(`update users set last_login = to_timestamp($2/1000.0) where username = $1`, [username, at]);
+}
 
 /**
  * Load the recent working set into memory. Sessions older than the window are left in PG:

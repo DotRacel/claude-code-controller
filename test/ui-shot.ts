@@ -191,7 +191,7 @@ interface Shot { name: string; setup?: (cdp: CDP) => Promise<void>; noCredential
 
 async function main() {
   fs.mkdirSync(OUT, { recursive: true });
-  const preview = await startPreview({ port: 0, credential: 'ui-shot' });
+  const preview = await startPreview({ port: 0, username: 'uishot' });
   const base = `http://127.0.0.1:${preview.port}`;
   const consoleErrors: string[] = [];
 
@@ -270,7 +270,11 @@ async function main() {
         await sleep(500);
       },
     },
-    { name: '09-credential-gate', noCredential: true },
+    { name: '09-auth-gate', noCredential: true },
+    { name: '10-auth-gate-register', noCredential: true, setup: async (c) => {
+      await c.eval(`[...document.querySelectorAll('.auth-tabs button')].find(b => b.textContent === '注册')?.click()`);
+      await sleep(300);
+    } },
   ];
 
   const only = arg('--device');

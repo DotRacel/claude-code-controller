@@ -8,8 +8,13 @@
 set -u
 cd "$(dirname "$0")/.."
 export DATABASE_URL="${DATABASE_URL:-postgres://ccc:ccc@127.0.0.1:5432/ccc}"
-CRED=e2e-persist-cred
+source "$(dirname "$0")/e2e-auth.sh"
+# Registration is gated, so the servers this script starts need the invite code.
+export INVITE_CODE="$CCC_E2E_INVITE"
 PORT=8787
+E2E_USER=e2epersist
+E2E_PASS=e2e-persist-password
+CRED=  # the account's token, obtained once server #1 is up
 EXPECT=PERSIST-OK
 
 # Server processes are tracked by PID. Do NOT pkill -f on the command string: this script's own
@@ -26,14 +31,18 @@ cleanup() { stop_server; tmux kill-session -t ccpersist 2>/dev/null; }
 trap cleanup EXIT
 
 rm -rf /tmp/ccc-logs; rm -f /tmp/ccc-persist-srv1.log /tmp/ccc-persist-srv2.log
-# Clean slate for this credential only (events cascade with their sessions).
+# Clean slate for this account only (events cascade with their sessions). The account row itself
+# is kept, so its token — and everything the CLI has saved for it — stays stable across runs.
 docker compose exec -T db psql -U ccc -d ccc -q \
-  -c "delete from sessions where credential='$CRED'" \
-  -c "delete from environments where credential='$CRED'" >/dev/null 2>&1
+  -c "delete from sessions where credential in (select token from users where username='$E2E_USER')" \
+  -c "delete from environments where credential in (select token from users where username='$E2E_USER')" >/dev/null 2>&1
 
 echo "=== server #1 (postgres) ==="
 start_server /tmp/ccc-persist-srv1.log || exit 1
-grep -E "postgres|loaded|listening" /tmp/ccc-persist-srv1.log
+grep -E "postgres|loaded|listening|registration" /tmp/ccc-persist-srv1.log
+
+CRED=$(ccc_login "$PORT" "$E2E_USER" "$E2E_PASS") || exit 1
+echo "account $E2E_USER → ${CRED:0:12}…"
 
 tmux kill-session -t ccpersist 2>/dev/null; sleep 0.5
 tmux new-session -d -s ccpersist -n cli -x 200 -y 50

@@ -58,10 +58,15 @@ async function main() {
   console.log(`${ts()} controller server listening on http://${HOST}:${PORT}`);
   if (pool) {
     const n = server.store.sessions.size;
-    console.log(`${ts()} loaded ${n} session${n === 1 ? '' : 's'} from postgres into the read cache`);
+    console.log(`${ts()} loaded ${n} session${n === 1 ? '' : 's'} and ${server.store.userCount} account${server.store.userCount === 1 ? '' : 's'} from postgres into the read cache`);
   }
   console.log(`${ts()} static SPA: ${hasBuild ? staticDir : 'NOT BUILT — run the web build (cd web && npm run build)'}`);
-  console.log(`${ts()} injector connects with: control-claude-code --server http://<this-host>:${PORT} --credential <凭证A>`);
+  // Without an invite code nobody can register, which on a first boot means nobody can use the
+  // server at all — worth saying loudly rather than letting the web app 403 in the user's face.
+  if (process.env.INVITE_CODE) console.log(`${ts()} registration OPEN — invite code is set (${process.env.INVITE_CODE.length} chars)`);
+  else console.log(`${ts()} ⚠️  INVITE_CODE not set — registration is CLOSED. Start with: INVITE_CODE=<码> node src/server/main.ts`);
+  if (!pool && !process.env.DATABASE_URL) console.log(`${ts()} ⚠️  accounts are in memory too — every registration is lost on restart`);
+  console.log(`${ts()} clients connect with: control-claude-code --server http://<this-host>:${PORT}  (then log in), or the web app`);
 
   // Flush the batched last_activity bumps and close the pool instead of dropping them.
   let stopping = false;

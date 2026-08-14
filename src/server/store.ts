@@ -19,7 +19,8 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import type { ServerResponse } from 'node:http';
 import {
-  type Pool, upsertEnv, upsertSession, insertEvents, selectHistory, flushActivity, loadRecent,
+  type Pool, type UserRow, upsertEnv, upsertSession, insertEvents, selectHistory, flushActivity,
+  loadRecent, loadUsers, insertUser, updateLastLogin,
 } from './db.ts';
 import { userTextsFrom } from '../transcript-text.ts';
 import { toolArg, HIDDEN_TOOLS } from '../tool-summary.ts';
@@ -123,9 +124,72 @@ export function encodeWorkSecret(sessionIngressToken: string, apiBaseUrl: string
   return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
 }
 
+// ── accounts ──
+
+/** An account in the read cache. The password hash never leaves this file. */
+export interface UserRecord {
+  username: string;
+  token: string;
+  createdAt: number;
+  lastLogin?: number;
+}
+
+/**
+ * scrypt parameters. N=16384/r=8 costs ~16MB and ~50ms per hash — deliberately slow, and only
+ * ever paid on register/login, never on a read path. Stored alongside the hash so raising the
+ * cost later still verifies old passwords.
+ */
+const SCRYPT = { N: 16384, r: 8, p: 1, keylen: 32, saltLen: 16 };
+const scrypt = (password: string, salt: Buffer, N: number, r: number, p: number, keylen: number): Promise<Buffer> =>
+  new Promise((resolve, reject) => {
+    // maxmem must clear 128*N*r, which the default 32MB does not once N grows.
+    crypto.scrypt(password, salt, keylen, { N, r, p, maxmem: 256 * 1024 * 1024 }, (err, dk) => (err ? reject(err) : resolve(dk)));
+  });
+
+/** `scrypt$N$r$p$salt$hash`, salt and hash base64url. */
+export async function hashPassword(password: string): Promise<string> {
+  const { N, r, p, keylen, saltLen } = SCRYPT;
+  const salt = crypto.randomBytes(saltLen);
+  const dk = await scrypt(password, salt, N, r, p, keylen);
+  return `scrypt$${N}$${r}$${p}$${salt.toString('base64url')}$${dk.toString('base64url')}`;
+}
+
+/** Constant-time verify. A malformed or unknown-algorithm hash fails closed. */
+export async function verifyPassword(password: string, encoded: string): Promise<boolean> {
+  const parts = encoded.split('$');
+  if (parts.length !== 6 || parts[0] !== 'scrypt') return false;
+  const [, sN, sr, sp, sSalt, sHash] = parts;
+  const N = Number(sN), r = Number(sr), p = Number(sp);
+  if (!Number.isInteger(N) || !Number.isInteger(r) || !Number.isInteger(p)) return false;
+  const expected = Buffer.from(sHash, 'base64url');
+  if (!expected.length) return false;
+  try {
+    const dk = await scrypt(password, Buffer.from(sSalt, 'base64url'), N, r, p, expected.length);
+    return crypto.timingSafeEqual(dk, expected);
+  } catch {
+    return false; // absurd parameters (maxmem, N not a power of two) — not a valid password
+  }
+}
+
+/** The credential (凭证A) an account owns. Issued once at registration, never rotated. */
+export const issueToken = (): string => 'ccc_' + crypto.randomBytes(32).toString('base64url');
+
+/** Strip the hash: nothing outside this file has any business holding it. */
+const publicUser = (u: UserRow): UserRecord => ({ username: u.username, token: u.token, createdAt: u.createdAt, lastLogin: u.lastLogin });
+
+/**
+ * Hashed against when the username does not exist, so a login attempt costs the same ~50ms
+ * either way and the response time stops answering "does this account exist?". Zero salt and
+ * zero hash at the real parameters — it can never match a password.
+ */
+const DUMMY_HASH = `scrypt$${SCRYPT.N}$${SCRYPT.r}$${SCRYPT.p}$${'A'.repeat(22)}$${'A'.repeat(43)}`;
+
 export class Store {
   envs = new Map<string, EnvRecord>();
   sessions = new Map<string, SessionRecord>(); // by sessionId
+  /** Accounts, keyed by username. Hashes live here and are never handed out. */
+  private users = new Map<string, UserRow>();
+  private byToken = new Map<string, string>(); // token → username
   private byIngressToken = new Map<string, string>(); // ingressToken → sessionId
   private memHistory = new Map<string, unknown[]>(); // no-pool fallback: capped ring
   private pool?: Pool;
@@ -142,8 +206,12 @@ export class Store {
   }
 
   /** Hydrate the read cache from PG. No-op without a pool. */
-  async load(windowDays = Number(process.env.CCC_LOAD_WINDOW_DAYS || 30)): Promise<{ envs: number; sessions: number }> {
-    if (!this.pool) return { envs: 0, sessions: 0 };
+  async load(windowDays = Number(process.env.CCC_LOAD_WINDOW_DAYS || 30)): Promise<{ envs: number; sessions: number; users: number }> {
+    if (!this.pool) return { envs: 0, sessions: 0, users: 0 };
+    for (const u of await loadUsers(this.pool)) {
+      this.users.set(u.username, u);
+      this.byToken.set(u.token, u.username);
+    }
     const { envs, sessions } = await loadRecent(this.pool, windowDays);
     for (const e of envs) {
       this.envs.set(e.id, { ...e, online: false, queue: [], inflight: new Map() });
@@ -158,7 +226,55 @@ export class Store {
       });
       this.byIngressToken.set(s.ingressToken, s.id);
     }
-    return { envs: envs.length, sessions: sessions.length };
+    return { envs: envs.length, sessions: sessions.length, users: this.users.size };
+  }
+
+  // ── accounts ──
+
+  get userCount(): number { return this.users.size; }
+
+  /**
+   * Register an account and issue its token. Returns undefined when the username is taken —
+   * PG decides that (insertUser's ON CONFLICT), so a race cannot produce two owners of one name.
+   * Without a pool the cache is the only authority, which is what the tests run on.
+   */
+  async createUser(username: string, password: string): Promise<UserRecord | undefined> {
+    if (this.users.has(username)) return undefined;
+    const row: UserRow = { username, passwordHash: await hashPassword(password), token: issueToken(), createdAt: Date.now() };
+    if (this.pool && !(await insertUser(this.pool, row))) return undefined;
+    this.users.set(username, row);
+    this.byToken.set(row.token, username);
+    return publicUser(row);
+  }
+
+  /** Synchronous by design — web-channel.ts authenticates inside a WS upgrade handler. */
+  userByToken(token: string): UserRecord | undefined {
+    const username = this.byToken.get(token);
+    const row = username ? this.users.get(username) : undefined;
+    return row ? publicUser(row) : undefined;
+  }
+
+  getUser(username: string): UserRecord | undefined {
+    const row = this.users.get(username);
+    return row ? publicUser(row) : undefined;
+  }
+
+  /**
+   * Check a password. Returns the account (with its token) on success, undefined otherwise —
+   * the caller must not distinguish "no such user" from "wrong password" to the client.
+   * An unknown user still pays a hash so the response time does not leak which it was.
+   */
+  async verifyLogin(username: string, password: string): Promise<UserRecord | undefined> {
+    const row = this.users.get(username);
+    if (!row) { await verifyPassword(password, DUMMY_HASH); return undefined; }
+    return (await verifyPassword(password, row.passwordHash)) ? publicUser(row) : undefined;
+  }
+
+  async touchLogin(username: string): Promise<void> {
+    const row = this.users.get(username);
+    if (!row) return;
+    row.lastLogin = Date.now();
+    if (this.pool) await updateLastLogin(this.pool, username, row.lastLogin).catch(() => {});
   }
 
   /** Flush pending last_activity bumps and stop the timer. */

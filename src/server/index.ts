@@ -2,7 +2,13 @@
  * index.ts — the controller server: bridge control-plane REST + CCR v2 SSE data-plane.
  *
  * Multi-tenant: every environment/session is owned by a credential ("凭证A") read from the
- * bridge `Authorization: Bearer`. The data-plane authenticates by the session_ingress_token.
+ * bridge `Authorization: Bearer`. A credential is an account's issued token — the control
+ * plane rejects one that belongs to no account, so a namespace cannot be conjured by picking
+ * a string. Accounts are created at /v1/auth/register, gated by an invite code.
+ *
+ * The data-plane authenticates by the session_ingress_token instead, which the child was
+ * handed when the session was created; it is per-session and account-independent by design.
+ *
  * Re-hosts the Remote Control control-plane so an injected `claude remote-control` talks to
  * us; the web side (web-channel.ts) attaches to the returned `server` and relays per-credential.
  */
@@ -69,6 +75,40 @@ const bearer = (req: http.IncomingMessage): string | undefined => {
   const h = req.headers.authorization;
   return h && h.startsWith('Bearer ') ? h.slice(7) : undefined;
 };
+
+// ── accounts ──
+
+export const USERNAME_RE = /^[a-zA-Z0-9_-]{3,32}$/;
+export const MIN_PASSWORD = 8;
+/** Failed logins before a username is locked out, and for how long. */
+const LOGIN_MAX_FAILS = 5;
+const LOGIN_LOCK_MS = 60_000;
+
+/** Length-safe constant-time compare — timingSafeEqual throws on a length mismatch. */
+function safeEqual(a: string, b: string): boolean {
+  const ba = Buffer.from(a, 'utf8'), bb = Buffer.from(b, 'utf8');
+  if (ba.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ba, bb);
+}
+
+/**
+ * The invite code every registration must present. Read per-request rather than at boot so a
+ * test (and an operator restarting under a new code) sees the change without a reload.
+ * Unset means registration is CLOSED — defaulting to open would silently remove the gate.
+ */
+const inviteCode = (): string | undefined => {
+  const c = process.env.INVITE_CODE;
+  return c && c.length ? c : undefined;
+};
+
+/** Never throw out of a handler on malformed input: an unauthenticated caller controls this. */
+function safeJson(raw: string): Record<string, unknown> {
+  try {
+    const v = JSON.parse(raw || '{}');
+    return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+  } catch { return {}; }
+}
+const str = (v: unknown): string => (typeof v === 'string' ? v : '');
 /** The origin the child should use to reach us, derived from the injector's own request. */
 const originOf = (req: http.IncomingMessage): string => {
   const proto = (req.headers['x-forwarded-proto'] as string) || 'http';
@@ -88,7 +128,10 @@ export async function createControllerServer(opts: CreateOpts = {}): Promise<Con
   const store = new Store({ pool: opts.pool });
   await store.load(); // hydrate the read cache before we accept any request
 
-  const server = http.createServer(async (req, res) => {
+  /** Per-username failed-login counters. Memory-only: a restart forgiving a lockout is fine. */
+  const loginFails = new Map<string, { n: number; until: number }>();
+
+  const handle = async (req: http.IncomingMessage, res: http.ServerResponse) => {
     const method = req.method || 'GET';
     const url = new URL(req.url || '/', 'http://127.0.0.1');
     const p = url.pathname;
@@ -101,11 +144,62 @@ export async function createControllerServer(opts: CreateOpts = {}): Promise<Con
 
     let m: RegExpExecArray | null;
 
+    /**
+     * The credential for a control-plane call: a bearer token that belongs to an account.
+     * Returns undefined for both "no header" and "unknown token"; the caller answers 401 either
+     * way, and the distinction is only worth making in the error body.
+     */
+    const credentialOf = (): string | undefined => {
+      const t = bearer(req);
+      return t && store.userByToken(t) ? t : undefined;
+    };
+    const noAuth = () => json(401, { error: { type: bearer(req) ? 'bad_credential' : 'no_credential' } });
+
+    // ── accounts ──
+    // POST /v1/auth/register — {username, password, invite_code} → the account's fixed token
+    if (method === 'POST' && p === '/v1/auth/register') {
+      const code = inviteCode();
+      const body = safeJson(await readBody(req));
+      const username = str(body.username).trim();
+      const password = str(body.password);
+      if (!code) return json(403, { error: { type: 'registration_closed', message: '服务端未设置 INVITE_CODE，注册已关闭' } });
+      if (!USERNAME_RE.test(username)) return json(400, { error: { type: 'bad_username', message: '用户名需 3–32 位字母、数字、下划线或连字符' } });
+      if (password.length < MIN_PASSWORD) return json(400, { error: { type: 'weak_password', message: `密码至少 ${MIN_PASSWORD} 位` } });
+      if (!safeEqual(str(body.invite_code), code)) return json(403, { error: { type: 'bad_invite_code', message: '邀请码不正确' } });
+      const user = await store.createUser(username, password);
+      if (!user) return json(409, { error: { type: 'username_taken', message: '用户名已被占用' } });
+      return json(200, { token: user.token, username: user.username });
+    }
+    // POST /v1/auth/login — {username, password} → the same token, every time
+    if (method === 'POST' && p === '/v1/auth/login') {
+      const body = safeJson(await readBody(req));
+      const username = str(body.username).trim();
+      const lock = loginFails.get(username);
+      if (lock && lock.until > Date.now()) {
+        return json(429, { error: { type: 'too_many_attempts', message: `失败次数过多，请 ${Math.ceil((lock.until - Date.now()) / 1000)} 秒后再试` } });
+      }
+      const user = await store.verifyLogin(username, str(body.password));
+      if (!user) {
+        const n = (lock?.n ?? 0) + 1;
+        loginFails.set(username, { n, until: n >= LOGIN_MAX_FAILS ? Date.now() + LOGIN_LOCK_MS : 0 });
+        return json(401, { error: { type: 'bad_credentials', message: '用户名或密码错误' } });
+      }
+      loginFails.delete(username);
+      await store.touchLogin(user.username);
+      return json(200, { token: user.token, username: user.username });
+    }
+    // GET /v1/auth/me — is this token still good? Both clients check before settling in.
+    if (method === 'GET' && p === '/v1/auth/me') {
+      const t = bearer(req);
+      const user = t ? store.userByToken(t) : undefined;
+      return user ? json(200, { username: user.username }) : noAuth();
+    }
+
     // ── bridge control-plane ──
     // POST /v1/environments/bridge — register (owner = 凭证A) + auto-create one session
     if (method === 'POST' && p === '/v1/environments/bridge') {
-      const credential = bearer(req);
-      if (!credential) return json(401, { error: { type: 'no_credential' } });
+      const credential = credentialOf();
+      if (!credential) return noAuth();
       const body = JSON.parse((await readBody(req)) || '{}');
       const env = await store.createEnv({ credential, machineName: body.machine_name, dir: body.directory, branch: body.branch, gitRepoUrl: body.git_repo_url, reuseId: body.environment_id });
       onEvent({ type: 'env.register', envId: env.id, credential, body });
@@ -188,8 +282,8 @@ export async function createControllerServer(opts: CreateOpts = {}): Promise<Con
     // ── interactive REPL bridge (/rc) control-plane ──
     // POST /v1/code/sessions — createCodeSession: owned by 凭证A, creates a session record.
     if (method === 'POST' && p === '/v1/code/sessions') {
-      const credential = bearer(req);
-      if (!credential) return json(401, { error: { type: 'no_credential' } });
+      const credential = credentialOf();
+      if (!credential) return noAuth();
       const body = JSON.parse((await readBody(req)) || '{}');
       const s = await store.createReplSession(credential, sessionMetaFrom(body));
       onEvent({ type: 'session.create', sessionId: s.id, credential });
@@ -197,19 +291,22 @@ export async function createControllerServer(opts: CreateOpts = {}): Promise<Con
     }
     // POST /v1/code/sessions/{id}/bridge — fetchRemoteCredentials → worker_jwt (= ingress token).
     if (method === 'POST' && (m = /^\/v1\/code\/sessions\/([^/]+)\/bridge$/.exec(p))) {
-      const credential = bearer(req);
+      // This hands back the session's ingress token, which is full data-plane access — so it
+      // needs a real account, not merely a matching session id.
+      const credential = credentialOf();
+      if (!credential) return noAuth();
       const body = JSON.parse((await readBody(req)) || '{}');
       let session = store.getSession(m[1]);
       // Not in the read cache (never seen, or older than the load window) while the TUI still
       // holds the cse_* id. Recreate it under this credential so fetchRemoteCredentials can
       // finish without a /login — this is why a cold session is recoverable, not lost.
-      if (!session && credential && m[1].startsWith('cse_')) {
+      if (!session && m[1].startsWith('cse_')) {
         session = await store.createReplSession(credential, sessionMetaFrom(body), m[1]);
         onEvent({ type: 'session.create', sessionId: session.id, credential });
       } else if (session && (await store.updateSessionMeta(session.id, sessionMetaFrom(body)))) {
         onEvent({ type: 'session.update', sessionId: session.id, credential: session.credential });
       }
-      if (!session || (credential && session.credential !== credential)) return json(session ? 401 : 404, { error: { type: 'bad_session' } });
+      if (!session || session.credential !== credential) return json(session ? 401 : 404, { error: { type: 'bad_session' } });
       return json(200, { worker_jwt: session.ingressToken, api_base_url: originOf(req), worker_epoch: 1, expires_in: 3600 });
     }
     // /v1/sessions — bridge session metadata (createBridgeSession)
@@ -219,6 +316,21 @@ export async function createControllerServer(opts: CreateOpts = {}): Promise<Con
     // ── static SPA (non-API) ──
     if (opts.staticDir && (method === 'GET' || method === 'HEAD')) return serveStatic(opts.staticDir, p, res);
     return json(404, { error: { type: 'not_found', message: p } });
+  };
+
+  /**
+   * A throw inside the handler would otherwise leave the request hanging with no response —
+   * the client waits for its timeout. Now that /v1/auth/* takes unauthenticated input, that is
+   * reachable without a token, so every path answers something.
+   */
+  const server = http.createServer((req, res) => {
+    handle(req, res).catch((e) => {
+      console.error(`[server] unhandled ${req.method} ${req.url}: ${e?.stack || e}`);
+      if (res.headersSent) { try { res.end(); } catch {} return; }
+      res.statusCode = 500;
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ error: { type: 'internal' } }));
+    });
   });
 
   const api = {

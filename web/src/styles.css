@@ -149,7 +149,7 @@ textarea { font: inherit; }
   .phone-frame { width: 100%; height: 100%; border: none; border-radius: 0; box-shadow: none; }
 }
 
-/* ── centred panels (credential gate) ── */
+/* ── centred panels (auth gate) ── */
 .center-screen { height: 100%; display: flex; align-items: center; justify-content: center; padding: 24px; }
 .panel { width: 100%; max-width: 340px; text-align: center; }
 .panel h1 { font-size: 24px; font-weight: 700; letter-spacing: -.3px; margin: 16px 0 10px; }
@@ -163,6 +163,24 @@ textarea { font: inherit; }
   color: var(--text); font-family: var(--mono); font-size: 15px;
 }
 .cred-input:focus { outline: none; border-color: var(--accent); }
+/* A username or password is prose, not a token — mono only earns its place on the `ccc_…` field.
+   16px because anything smaller makes iOS Safari zoom the whole page on focus. */
+.cred-input.text { font-family: var(--sans); font-size: 16px; margin: 0 0 10px; }
+
+/* ── auth gate ── */
+.auth-tabs { display: flex; gap: 4px; margin: 16px 0 18px; padding: 4px; background: var(--raised); border-radius: 12px; }
+.auth-tabs button {
+  flex: 1; min-height: 36px; border-radius: 9px; color: var(--text-3);
+  font: 600 14px/1 var(--sans);
+}
+.auth-tabs button.on { background: var(--sheet); color: var(--text); }
+/* Not colour alone (0c): the message is the carrier, the tint only reinforces it. */
+.auth-error {
+  margin: 2px 0 10px; padding: 9px 12px; border-radius: 10px;
+  background: var(--tint-danger); border: 1px solid var(--line-2);
+  font: 400 13px/1.45 var(--sans); color: var(--danger); text-align: left;
+}
+.auth-alt { margin-top: 14px; font: 400 13px/1 var(--sans); color: var(--text-3); text-decoration: underline; }
 
 /* ── buttons ── */
 .btn {

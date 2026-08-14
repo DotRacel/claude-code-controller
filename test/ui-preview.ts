@@ -6,8 +6,10 @@
  * `/v1/code/sessions/{id}/worker/events` exactly as a worker would, so the transcript the browser
  * renders is produced by the same reducer path as a live session.
  *
- * Run: node test/ui-preview.ts [--port 8791] [--credential ui-preview]
- *      then open http://127.0.0.1:8791 (credential is pre-seeded in the URL: /?cred=ui-preview)
+ * Run: node test/ui-preview.ts [--port 8791] [--username preview]
+ *      then open http://127.0.0.1:8791 and paste the printed token into the gate's
+ *      「用 token 直接连接」. The token is issued by the server (accounts are real now), so it
+ *      is printed on startup rather than being a name chosen here.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -97,11 +99,14 @@ async function post(server: ControllerServer, token: string, sid: string, payloa
   await sleep(30);
 }
 
-export async function startPreview(opts: { port?: number; credential?: string } = {}): Promise<Preview> {
-  const credential = opts.credential ?? 'ui-preview';
+export async function startPreview(opts: { port?: number; username?: string } = {}): Promise<Preview> {
   let web: ReturnType<typeof attachWebChannel> | null = null;
   const server = await createControllerServer({ port: opts.port ?? 0, staticDir, onEvent: (e) => web?.handleEvent(e) });
   web = attachWebChannel(server.server, server, server.store);
+  // The credential is an account's issued token now — /ws/client refuses anything else, so the
+  // preview has to register a throwaway account rather than invent a string.
+  const account = await server.store.createUser(opts.username ?? 'preview', 'preview-password');
+  const credential = account!.token;
   const aborts: AbortController[] = [];
 
   /** Open the SSE data-plane so the session reads as `active` (a worker would hold this open). */
@@ -149,7 +154,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     console.error(`web/dist not built — run: cd web && npm run build`);
     process.exit(1);
   }
-  const p = await startPreview({ port: Number(arg('--port') || 8791), credential: arg('--credential') });
+  const p = await startPreview({ port: Number(arg('--port') || 8791), username: arg('--username') });
   console.log(`ui-preview on http://127.0.0.1:${p.port}  credential=${p.credential}  chat=${p.chatId}`);
   console.log('sessions: 1 live transcript · 1 awaiting approval · 1 offline');
   process.on('SIGINT', () => { p.close(); process.exit(0); });

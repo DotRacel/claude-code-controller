@@ -1,17 +1,37 @@
 import { useState, useEffect, useRef, type ReactNode } from 'react';
 import { ControlSocket, getCredential, setCredential, clearCredential, type SessionView, type Connection } from './ws';
 import { showPushNotification, pushNotificationFrom } from './notify';
+import { checkToken } from './auth.ts';
 import { SessionList } from './components/SessionList.tsx';
 import { ChatView } from './components/ChatView.tsx';
-import { ClaudeMark } from './icons.tsx';
+import { AuthGate } from './components/AuthGate.tsx';
 
 export function App() {
   const [credential, setCred] = useState<string | null>(getCredential());
+  // Until the stored token has been checked, showing either screen would be a guess: the login
+  // form flashes for a user who is signed in, the session list hangs for one who is not.
+  const [checked, setChecked] = useState(!credential);
+
+  useEffect(() => {
+    if (checked || !credential) return;
+    let live = true;
+    void checkToken(credential).then((r) => {
+      if (!live) return;
+      // Only an outright rejection logs the user out. If the server is merely unreachable the
+      // token is still presumed good — the socket's own reconnect loop handles the outage.
+      if (r.status === 'rejected') { clearCredential(); setCred(null); }
+      setChecked(true);
+    });
+    return () => { live = false; };
+  }, []);
+
   return (
     <PhoneStage>
-      {!credential
-        ? <CredentialGate onSet={(c) => { setCredential(c); setCred(c); }} />
-        : <Home credential={credential} onLogout={() => { clearCredential(); setCred(null); }} />}
+      {!checked
+        ? <div className="center-screen" />
+        : !credential
+          ? <AuthGate onAuthed={({ token }) => { setCredential(token); setCred(token); }} />
+          : <Home credential={credential} onLogout={() => { clearCredential(); setCred(null); }} />}
     </PhoneStage>
   );
 }
@@ -29,26 +49,6 @@ function PhoneStage({ children }: { children: ReactNode }) {
         <p>右边是等比的手机画面，功能完全一致。</p>
       </div>
       <div className="phone-frame">{children}</div>
-    </div>
-  );
-}
-
-function CredentialGate({ onSet }: { onSet: (c: string) => void }) {
-  const [val, setVal] = useState('');
-  return (
-    <div className="center-screen">
-      <div className="panel">
-        <div className="logo-mark"><ClaudeMark size={34} fill="#fefcfb" /></div>
-        <h1>Claude Remote</h1>
-        <p>粘贴你的凭证以连接自己的会话。凭证由 <span className="mono">control-claude-code</span> 启动时生成并打印。</p>
-        <input
-          className="cred-input" placeholder="ccc_…" value={val}
-          onChange={(e) => setVal(e.target.value)}
-          autoCapitalize="off" autoCorrect="off" spellCheck={false}
-        />
-        <button className="btn primary block" disabled={!val.trim()} onClick={() => onSet(val.trim())}>连接</button>
-        <p>凭证保存在本机 cookie；丢失后需要重新获取。</p>
-      </div>
     </div>
   );
 }

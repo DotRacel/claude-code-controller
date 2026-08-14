@@ -12,7 +12,6 @@ import { attachWebChannel } from '../src/server/web-channel.ts';
 import { launchWithGatesRebound } from '../src/injector/gate-rebind.ts';
 import { existsSync, rmSync } from 'node:fs';
 
-const CRED = 'dev-e2e-AAA';
 const ts = () => new Date().toISOString().slice(11, 23);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function waitFor(cond: () => boolean, ms: number, label: string) {
@@ -26,7 +25,10 @@ async function main() {
   const server = await createControllerServer({ port: 0, host: '127.0.0.1', onEvent: (e: ServerEvent) => { web?.handleEvent(e); } });
   web = attachWebChannel(server.server, server, server.store);
   const base = `http://127.0.0.1:${server.port}`;
-  console.log(`${ts()} server @ ${base}; launching injected claude (cred=${CRED})…`);
+  // Both ends of this test authenticate as one account: the injected claude on the bridge, the
+  // fake phone on /ws/client. Neither accepts an invented credential any more.
+  const CRED = (await server.store.createUser('e2e', 'e2e-password'))!.token;
+  console.log(`${ts()} server @ ${base}; launching injected claude (cred=${CRED.slice(0, 12)}…)…`);
 
   const h = await launchWithGatesRebound({ bridgeBaseUrl: base, bridgeToken: CRED, cwd: process.cwd(), log: () => {}, onStderr: () => {} });
 

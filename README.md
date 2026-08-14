@@ -111,26 +111,38 @@ on (incl. the owner-vs-peer `client_platform` invariant). Real-wire fixtures liv
 ## Hosted web (third version) — DONE
 
 Phones control sessions through a central server, scoped by a **credential** (凭证A). Same
-credential ⇒ the injector and the web see each other; it's a namespace key, stored in a
-cookie (lost = re-issue).
+credential ⇒ the injector and the web see each other.
+
+The credential is an **account's token**: registration issues it, it never rotates, and the
+server refuses one that belongs to no account. That is the whole point — before accounts, the
+credential was a namespace key anyone could conjure by picking a string, so `Authorization:
+Bearer <anything>` opened a private namespace. Registration is gated by an invite code
+(`INVITE_CODE` on the server; unset ⇒ registration is closed, never open).
 
 Run it:
 0. `npm install && npm run db:up` — start PostgreSQL (docker compose) and export
    `DATABASE_URL=postgres://ccc:ccc@127.0.0.1:5432/ccc` (see `.env.example`).
-1. `npm run server` — central server on `:8787` (bridge control-plane + CCR v2 data-plane +
-   `/ws/client` web channel + serves `web/dist`). Without `DATABASE_URL` it still runs, in
-   memory, and says so — nothing survives a restart.
+1. `INVITE_CODE=<码> npm run server` — central server on `:8787` (accounts + bridge
+   control-plane + CCR v2 data-plane + `/ws/client` web channel + serves `web/dist`). Without
+   `DATABASE_URL` it still runs, in memory, and says so — nothing survives a restart, accounts
+   included.
 2. `cd web && npm install && npm run build` — build the mobile SPA once.
-3. `node src/control-cli.ts --credential <A> --server http://127.0.0.1:8787` (or an https
-   tunnel URL) — launches an injected claude whose bridge points at the server, owned by `<A>`.
-   Generates/prints/saves a credential if none is given. Interactive by default (see below);
-   `--headless` gives the phone-only `claude remote-control` process instead.
-4. On your phone (LAN IP or a tunnel), open the server URL, paste the credential → your
-   session appears → chat, with tool-use permission prompts. On a desktop the same UI renders
-   inside a 390×844 phone frame, so the real thing is reviewable without a device.
+3. On your phone (LAN IP or a tunnel), open the server URL → register (username + password +
+   invite code) or log in. On a desktop the same UI renders inside a 390×844 phone frame, so
+   the real thing is reviewable without a device.
+4. `node src/control-cli.ts` — first run opens a small TUI: pick a backend (default
+   `http://127.0.0.1:8787`, or add your own), then log in with the same account (or paste its
+   token). The answer is saved to `~/.config/claude-code-controller/config.json` (0600) and
+   later runs skip straight to launching claude; `--login` reopens it to switch backend or
+   account. Interactive by default (see below); `--headless` gives the phone-only
+   `claude remote-control` process instead.
+5. Your session appears on the phone → chat, with tool-use permission prompts.
 
-- Data-plane is authenticated by the per-session ingress token; `/ws/client` is scoped to the
-  credential (a socket only touches its own sessions).
+- `--credential <token>` / `CCC_CREDENTIAL` bypasses the TUI entirely — that is the path
+  scripts and the e2e harness take, and it is why they never meet a prompt.
+- Data-plane is authenticated by the per-session ingress token, independent of accounts;
+  `/ws/client` requires a token that belongs to an account and is scoped to it (a socket only
+  touches its own sessions).
 - `node test/e2e-web.ts` runs the whole hosted loop in one process (real inference):
   session list → message → streamed reply → `can_use_tool` permission → tool executes.
 
@@ -372,24 +384,31 @@ blocker); and satisfy the transport init's OAuth check. A relayed web message is
 - `npm test` — the interactive control-plane (createCodeSession ownership + fetchRemoteCredentials
   + data-plane auth).
 
-Run: `node src/control-cli.ts --credential <A> --server http://127.0.0.1:8787`, then type `/rc`
-in the TUI.
+Run: `node src/control-cli.ts` (log in on first run), then type `/rc` in the TUI.
 
 ### CLI contract
 
 ```bash
 control-claude-code                            # interactive claude + /rc injection (default)
+control-claude-code --login                    # pick a backend / log in again
 control-claude-code --resume                   # ← any unknown arg is forwarded to claude
 control-claude-code -c --model opus "fix this"
 control-claude-code -- --help                  # everything after -- is claude's, verbatim
 control-claude-code --headless                 # old mode: injected `claude remote-control`
 ```
 
-Controller-owned flags — `--server`, `--credential`, `--cwd`, `--claude-bin`, `--log-dir`,
-`--headless`, `-i/--interactive` (compat no-op), `-h/--help`. Every other token, in order, is
-claude's argv; `--` forces the rest through even if it collides with a controller flag name. A
-value flag with a missing/flag-looking value is a hard error rather than silently eating a claude
-argument. `test/control-cli.test.ts` pins this contract.
+Controller-owned flags — `--login`, `--server`, `--credential`, `--cwd`, `--claude-bin`,
+`--log-dir`, `--headless`, `-i/--interactive` (compat no-op), `-h/--help`. Every other token, in
+order, is claude's argv; `--` forces the rest through even if it collides with a controller flag
+name. A value flag with a missing/flag-looking value is a hard error rather than silently eating a
+claude argument. `test/control-cli.test.ts` pins this contract.
+
+Backend + account live in `~/.config/claude-code-controller/config.json` (0600, one entry per
+backend). The TUI (`src/tui.ts`, `src/cli-auth.ts`) only appears when it has to: no saved token,
+`--login`, or a token the server has rejected. A server that is merely *unreachable* does not
+trigger it — the saved token is still the best answer we have, and demanding a password every
+time the LAN is out of reach would be wrong. `--credential` / `CCC_CREDENTIAL` skips it outright.
+Both prompts degrade to plain numbered lines when stdin is not a TTY, so scripts can drive them.
 
 Logs go to a directory, not the terminal (the TUI owns it): `~/.config/claude-code-controller/logs/`
 by default, `--log-dir` / `CCC_LOG_DIR` to move it. Each run writes `ccc-<stamp>-<pid>.log`
@@ -412,9 +431,17 @@ on resize. `CCC_NO_PROCESS_TITLE=1` keeps the real argv when you'd rather see th
 
 ## Persistence — PostgreSQL (fifth version) — DONE, verified
 
-The server is meant to serve many users, so state lives in PostgreSQL. Three tables
-(`src/server/schema.sql`): `environments`, `sessions`, `events`. `credential` deliberately has no
-registry table yet — it is still a pure namespace key.
+The server is meant to serve many users, so state lives in PostgreSQL. Four tables
+(`src/server/schema.sql`): `users`, `environments`, `sessions`, `events`. The `credential` columns
+hold a `users.token`, denormalised with no FK: the namespace key predates the accounts table, and
+a session outliving its account is a data question rather than a constraint worth paying for on
+the event-ingest path.
+
+Passwords are scrypt (N=16384, r=8) with the parameters stored alongside the hash, so the cost can
+be raised later without invalidating anyone. Accounts are cached in memory in full — unlike
+sessions there is no time window, because `store.userByToken()` has to answer *synchronously*
+(the `/ws/client` upgrade handler has nowhere to await) and a token issued years ago must still
+work.
 
 ```bash
 npm install && npm run db:up          # postgres:17 via docker compose (loopback-only :5432)
@@ -495,6 +522,12 @@ Two things it deliberately does *not* do:
 
 ## Next
 
-A real-phone LAN test (only tmux-automated so far), https cloud deploy, the compose `app`
-service, and a `credentials` table (registry + revocation + quota + account/password recovery),
-which is the natural next step now that there is a database.
+A real-phone LAN test (only tmux-automated so far), https cloud deploy, and the compose `app`
+service.
+
+The accounts table landed (registration, login, invite gate, strict token checks). What it still
+does not do: **token revocation / rotation** (a leaked token is good forever — there is no way to
+re-issue one without editing the row), **password change or recovery**, per-account **quota**, and
+invite codes as first-class rows (they are one `INVITE_CODE` env var, so it cannot be revoked per
+person or trace who used it). Login rate-limiting is per-username and in memory, which a restart
+forgives and which does nothing against an attacker spreading attempts across many usernames.

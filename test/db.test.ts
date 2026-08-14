@@ -18,6 +18,7 @@ import { createControllerServer } from '../src/server/index.ts';
 
 const URL = process.env.DATABASE_URL;
 const skip = URL ? false : 'DATABASE_URL not set (docker compose up -d db)';
+/** Fine as a bare partition key for the Store-level tests — only the HTTP paths need an account. */
 const CRED = 'test-cred-DB';
 const TEST_SCHEMA = 'ccc_test'; // isolated from the server's `public` tables
 
@@ -29,7 +30,7 @@ async function db(): Promise<Pool> {
   }
   // Every test starts from a clean slate; events go with the sessions (ON DELETE CASCADE).
   // Schema-qualified so a stray search_path can never point this at production tables.
-  await pool.query(`truncate ${TEST_SCHEMA}.sessions, ${TEST_SCHEMA}.environments cascade`);
+  await pool.query(`truncate ${TEST_SCHEMA}.sessions, ${TEST_SCHEMA}.environments, ${TEST_SCHEMA}.users cascade`);
   return pool;
 }
 test.after(async () => { await pool?.end(); });
@@ -162,11 +163,14 @@ test('server end-to-end: /rc session + events survive a restart', { skip }, asyn
   const auth = (t: string) => ({ Authorization: `Bearer ${t}` });
 
   const s1 = await createControllerServer({ pool });
+  // A real account, so the control plane accepts it — and so the restart below also proves the
+  // account itself was persisted and reloaded (s2 would 401 otherwise).
+  const cred = (await s1.store.createUser('dbtester', 'pw-12345678'))!.token;
   const cs = await fetch(`${s1.baseUrl}/v1/code/sessions`, {
-    method: 'POST', headers: auth(CRED), body: JSON.stringify({ config: { cwd: '/proj' } }),
+    method: 'POST', headers: auth(cred), body: JSON.stringify({ config: { cwd: '/proj' } }),
   }).then((r) => r.json());
   const creds = await fetch(`${s1.baseUrl}/v1/code/sessions/${cs.session.id}/bridge`, {
-    method: 'POST', headers: auth(CRED), body: '{}',
+    method: 'POST', headers: auth(cred), body: '{}',
   }).then((r) => r.json());
   await fetch(`${s1.baseUrl}/v1/code/sessions/${cs.session.id}/worker/events`, {
     method: 'POST', headers: { ...auth(creds.worker_jwt), 'content-type': 'application/json' },
@@ -181,7 +185,8 @@ test('server end-to-end: /rc session + events survive a restart', { skip }, asyn
 
   const s2 = await createControllerServer({ pool }); // restart
   try {
-    const list = s2.store.sessionsForCredential(CRED);
+    assert.equal(s2.store.userByToken(cred)?.username, 'dbtester', 'account restored');
+    const list = s2.store.sessionsForCredential(cred);
     assert.equal(list.length, 1, 'session list restored');
     assert.equal(list[0].id, cs.session.id);
     const h = (await s2.store.historyFor(cs.session.id)) as any[];

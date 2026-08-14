@@ -1,6 +1,20 @@
 -- schema.sql — applied idempotently on boot by ensureSchema() in db.ts.
 -- No migration framework yet: every statement is `if not exists`, so re-running is a no-op.
--- `credential` (凭证A) carries no registry table on purpose — it is still a pure namespace key.
+--
+-- `credential` (凭证A) is a user's issued token: every environment and session column named
+-- `credential` holds a `users.token`. It stays a denormalised text column with no FK — the
+-- namespace key predates the users table, and a session outliving its account is a data
+-- question, not a constraint we want the event ingest path to pay for.
+
+-- One account = one token, issued at registration and never rotated. `token` is what the CLI
+-- puts in `Authorization: Bearer` and what the web opens /ws/client with.
+create table if not exists users (
+  username      text primary key,
+  password_hash text not null,   -- scrypt, encoded by hashPassword() in store.ts
+  token         text not null,
+  created_at    timestamptz not null default now(),
+  last_login    timestamptz
+);
 
 create table if not exists environments (
   id            text primary key,
@@ -41,6 +55,7 @@ create table if not exists events (
   created_at  timestamptz not null default now()
 );
 
+create unique index if not exists users_token_idx on users (token);
 create index if not exists sessions_credential_idx on sessions (credential, last_activity desc);
 create unique index if not exists sessions_ingress_token_idx on sessions (ingress_token);
 create index if not exists environments_credential_idx on environments (credential);

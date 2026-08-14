@@ -9,7 +9,6 @@ import { createControllerServer, type ServerEvent } from '../src/server/index.ts
 import { attachWebChannel } from '../src/server/web-channel.ts';
 import { pushNotificationFrom, RC_READY_PUSH, isPushNotificationToolUse } from '../src/push-event.ts';
 
-const CRED = 'push-cred';
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function fju(message: string) {
@@ -50,6 +49,8 @@ test('unsubscribed web socket receives notify (session-list / background phone)'
   const events: ServerEvent[] = [];
   const server = await createControllerServer({ onEvent: (e) => events.push(e) });
   const web = attachWebChannel(server.server, server, server.store);
+  // The credential has to be a registered account's token for /ws/client to accept it.
+  const CRED = (await server.store.createUser('pushtester', 'pw-12345678'))!.token;
   const orig = await server.store.createReplSession(CRED, { dir: '/x', title: 'box' });
   const notes: any[] = [];
   const ws = new WebSocket(`ws://127.0.0.1:${server.port}/ws/client?credential=${CRED}`);

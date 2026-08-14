@@ -24,13 +24,14 @@
  *        CCC_NO_PROCESS_TITLE
  */
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { launchWithGatesRebound, launchInteractiveWithGatesRebound } from './injector/gate-rebind.ts';
+import {
+  CONFIG_DIR, CONFIG_FILE, DEFAULT_BACKEND, loadConfig, saveConfig, findBackend, checkToken,
+  normalizeUrl, runLoginFlow, legacyCredentialNotice,
+} from './cli-auth.ts';
 
-const CONFIG_DIR = path.join(os.homedir(), '.config', 'claude-code-controller');
 const DEFAULT_LOG_DIR = path.join(CONFIG_DIR, 'logs');
 const KEEP_RUNS = 20; // how many past runs' logs to keep in the log dir
 
@@ -44,6 +45,8 @@ export interface Cli {
   claudeBin?: string;
   logDir?: string;
   headless: boolean;
+  /** Force the backend/login TUI even when a saved token would have worked. */
+  login: boolean;
   help: boolean;
   /** argv forwarded to claude verbatim, in the order the user wrote it. */
   claudeArgs: string[];
@@ -87,7 +90,7 @@ function die(msg: string): never {
  * claude argument.
  */
 export function parseArgs(argv: string[]): Cli {
-  const cli: Cli = { headless: false, help: false, claudeArgs: [] };
+  const cli: Cli = { headless: false, login: false, help: false, claudeArgs: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--') { cli.claudeArgs.push(...argv.slice(i + 1)); break; }
@@ -113,6 +116,7 @@ export function parseArgs(argv: string[]): Cli {
       }
       if (name === 'headless' || name === 'no-interactive') { cli.headless = true; continue; }
       if (name === 'interactive') { cli.headless = false; continue; }
+      if (name === 'login') { cli.login = true; continue; }
     }
     cli.claudeArgs.push(a); // not ours → claude's
   }
@@ -132,9 +136,13 @@ function printHelp() {
   control-claude-code --model opus "修下这个 bug"
   control-claude-code -- --help                 # -- 之后的一切都交给 claude（包括 --help）
 
+首次运行会让你选后端并登录（账号在 web 端注册，需要邀请码），结果保存在
+${CONFIG_FILE}，之后直接启动。随时可用 \x1b[1m--login\x1b[0m 重新登录或切换后端。
+
 控制器选项:
-  --server <url>        控制器服务器地址（默认 $CCC_SERVER 或 http://127.0.0.1:8787）
-  --credential <A>      凭证A（默认 $CCC_CREDENTIAL，或 ${path.join(CONFIG_DIR, 'credential')}）
+  --login               强制进入后端选择 / 登录界面（切换后端、换账号）
+  --server <url>        控制器服务器地址（默认 $CCC_SERVER 或上次使用的后端）
+  --credential <A>      直接指定账号 token，跳过登录界面（默认 $CCC_CREDENTIAL）
   --cwd <dir>           claude 的工作目录（默认当前目录）
   --claude-bin <path>   claude 可执行文件（默认 $CLAUDE_BIN 或 claude）
   --log-dir <dir>       日志目录（默认 $CCC_LOG_DIR 或 ${DEFAULT_LOG_DIR}）
@@ -146,14 +154,45 @@ function printHelp() {
           CCC_NO_PROCESS_TITLE=1  不把宿主进程改名为 claude（tmux/screen 的窗口名会显示 node）`);
 }
 
-function loadOrCreateCredential(explicit?: string): { credential: string; generated: boolean; file: string } {
-  const file = path.join(CONFIG_DIR, 'credential');
-  if (explicit) return { credential: explicit, generated: false, file };
-  if (fs.existsSync(file)) return { credential: fs.readFileSync(file, 'utf8').trim(), generated: false, file };
-  const credential = 'ccc_' + crypto.randomBytes(24).toString('base64url');
-  fs.mkdirSync(CONFIG_DIR, { recursive: true });
-  fs.writeFileSync(file, credential, { mode: 0o600 });
-  return { credential, generated: true, file };
+/**
+ * Work out which server to talk to and as whom, prompting only when we have to.
+ *
+ * The order matters. An explicit `--credential` (or CCC_CREDENTIAL) bypasses everything, because
+ * scripts and the e2e harness drive this non-interactively and must never meet a prompt. Failing
+ * that, a saved token for the chosen backend is used as-is unless the server says it is dead —
+ * so the common case stays exactly as frictionless as it was before accounts existed, and the
+ * TUI appears on a first run, after `--login`, or when a token stops working.
+ */
+async function resolveAccount(cli: Cli): Promise<{ serverUrl: string; credential: string } | undefined> {
+  const envServer = cli.server || process.env.CCC_SERVER;
+  const explicitCredential = cli.credential || process.env.CCC_CREDENTIAL;
+  if (explicitCredential) {
+    return { serverUrl: normalizeUrl(envServer || DEFAULT_BACKEND), credential: explicitCredential };
+  }
+
+  const config = loadConfig();
+  const notice = legacyCredentialNotice();
+  if (notice) console.log(`\n${notice}\n`);
+
+  // --server names the backend outright; only the login step is left to decide.
+  const serverHint = envServer ? normalizeUrl(envServer) : undefined;
+
+  if (!cli.login) {
+    const url = serverHint ?? config.current ?? DEFAULT_BACKEND;
+    const saved = findBackend(config, url);
+    if (saved?.token) {
+      const check = await checkToken(url, saved.token);
+      // Unreachable is not a reason to re-authenticate — see checkToken in cli-auth.ts.
+      if (check.status !== 'rejected') return { serverUrl: url, credential: saved.token };
+      console.log(`\n登录已失效（${url}），请重新登录。\n`);
+    }
+  }
+
+  const result = await runLoginFlow(config, { serverHint });
+  if (!result) return undefined;
+  saveConfig(result.config);
+  console.log(`  已保存到 ${CONFIG_FILE}\n`);
+  return { serverUrl: result.serverUrl, credential: result.credential };
 }
 
 const ts = () => new Date().toISOString().slice(11, 23);
@@ -222,21 +261,21 @@ async function main() {
   const cli = parseArgs(process.argv.slice(2));
   if (cli.help) { printHelp(); return; }
 
-  const serverUrl = (cli.server || process.env.CCC_SERVER || 'http://127.0.0.1:8787').replace(/\/+$/, '');
+  // Log in (or confirm we already are) before touching logs or claude: if the user cancels,
+  // nothing should have happened yet.
+  const account = await resolveAccount(cli);
+  if (!account) { console.log('已取消。'); process.exit(1); }
+  const { serverUrl, credential } = account;
+
   const cwd = path.resolve(cli.cwd || process.cwd());
   const claudeBin = cli.claudeBin || process.env.CLAUDE_BIN || 'claude';
   const logDir = path.resolve(cli.logDir || process.env.CCC_LOG_DIR || DEFAULT_LOG_DIR);
-  const { credential, generated, file } = loadOrCreateCredential(cli.credential || process.env.CCC_CREDENTIAL);
 
   const logger = createLogger(logDir);
   logger.log(`[cli] argv=${JSON.stringify(process.argv.slice(2))}`);
   // Before anything long-running: tmux/screen read our argv for the window name (see above).
   logger.log(`[cli] process.title=${JSON.stringify(alignProcessTitle())}`);
   logger.log(`[cli] mode=${cli.headless ? 'headless' : 'interactive'} server=${serverUrl} cwd=${cwd} bin=${claudeBin} claudeArgs=${JSON.stringify(cli.claudeArgs)}`);
-
-  if (generated) {
-    console.log(`\n🔑 Generated a new credential (saved to ${file}):\n\n    ${credential}\n\n   Enter it in the web app to see this machine's sessions. Keep it safe — losing it loses access.\n`);
-  }
 
   const ctx: RunCtx = { claudeBin, cwd, serverUrl, credential, claudeArgs: cli.claudeArgs, logger };
   try {
