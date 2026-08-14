@@ -267,13 +267,31 @@ Three more things only the real installed app showed (reported on an iPhone 15 P
 Two follow-ups came out of measuring the installed app instead of reasoning about it, and both
 reversed an earlier decision:
 
-- **The height unit is `dvh`, and `%` is only the no-dvh fallback.** On the device: `innerHeight`
-  932, `100dvh` 932, but `height: 100%` → **873 = 932 − 59**, exactly the top inset. Under
-  `viewport-fit=cover` with a translucent status bar WebKit resolves the initial containing block
-  *without* that inset, so a `%` chain is short by the height of the Dynamic Island and leaves it
-  as a dead band at the bottom. Chromium does not reproduce this even with
-  `Emulation.setSafeAreaInsetsOverride` — its ICB stays the full viewport — so the numbers are
-  written into the CSS comment, because only a device can catch a regression here.
+- **The shell is `position: fixed` and sized in `lvh` when installed.** This one took four wrong
+  answers, so the measurement is worth stating in full. From the device (the app reports it on
+  every socket connect — see below):
+
+  ```
+  mode=standalone  screen=430x932  win=430x873  insets=59/34
+  vh/dvh/svh/lvh = 932 / 873 / 873 / 932        icb=873
+  ```
+
+  The screen is 932 and the insets are correct, but `innerHeight` says 873 — and `dvh`/`svh` agree
+  with it while `vh`/`lvh` do not. iOS 26 computes the *dynamic* and *small* viewports as if
+  Safari's toolbar were still present although it is hidden, so both of the units one would reach
+  for first are short by ~59pt. The initial containing block is short too (`%` → 873), which is why
+  `%` failed as well: every obvious choice was wrong, and switching between them just moved the
+  same band around. The web view really is 932 tall — an early screenshot showed the canvas
+  background reaching y=931.7 with the shell stopping at 873, which is precisely the exposed strip
+  that got reported as "space left for Safari's address bar".
+
+  So: `#root` is `position: fixed` (laid out against the viewport, not the shortened ICB) with
+  `height: 100lvh` under `@media (display-mode: standalone)`. `lvh` is the viewport with
+  retractable UI retracted, and an installed app has no chrome to retract, so there it is simply
+  the true height. The media query is not decoration — in a browser tab `lvh` is the
+  URL-bar-collapsed height, taller than the visible area, and would push the composer off-screen;
+  a tab keeps `dvh`, which is correct there. Chromium reproduces none of this even with
+  `Emulation.setSafeAreaInsetsOverride`, so only a device catches a regression here.
 - **The composer bar reaches the screen edge**; the pill clears ~12px, not the full 34pt inset.
   That inset is clearance for the home indicator's *gesture* area, not a margin a bottom bar must
   float above; sitting 34pt up left a band of bare page background that read as a hole. The sheets
@@ -298,10 +316,22 @@ status bar, and there is no web-facing opt-out (`theme-color` is ignored in Safa
 `scrollEdgeEffectStyle` is not exposed). All a page can do is control what gets sampled — which the
 frosted header now does deliberately.
 
-Because an installed PWA can sit on a stale service-worker cache indefinitely, the session menu
-prints `build <vite content hash> · 外壳 top→bottom / innerHeight`: one screenshot says which build
-a phone is actually running and whether its shell fills the viewport. Without it every layout
-report is ambiguous — `diag.html` can measure the browser, but not the app around it.
+**An installed web app could never update itself**, which is why several rounds of the above
+appeared to change nothing on the phone while being correct in a browser. The update check only
+runs on *navigation*, and iOS resumes a standalone app rather than navigating, so it kept whatever
+bundle it first installed — and standalone mode does not share Cache Storage with Safari, hence
+"fine in Safari, unchanged in the app". `main.tsx` now registers with `updateViaCache: 'none'`,
+calls `registration.update()` on every foreground and hourly, and reloads once on
+`controllerchange`; the session menu has a 强制更新 row (unregister every worker, drop every cache,
+reload past the HTTP cache) for a copy that is already frozen.
+
+**The browser reports what it is actually running.** On every socket connect the page sends a
+`hello` with its build hash, display-mode, window and screen size, shell box, ICB, all four
+viewport units, the insets and the measured gap under the composer; the server logs it, as it does
+shell fetches (`/`, `/sw.js`, `/assets/*`). This is not telemetry for its own sake: a frozen app
+requests *nothing*, so silence in the log is itself the diagnosis, and the numbers above were only
+obtainable this way. `diag.html` can measure a browser, but not the app around it — and asking a
+human to read numbers off a phone screen is both slow and, as it turned out, ambiguous.
 
 `web/public/diag.html` (served at `/diag.html`, deliberately excluded from the service worker
 cache) is the device-side counterpart: open it from the home-screen icon and it reports
