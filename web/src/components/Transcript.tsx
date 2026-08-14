@@ -167,13 +167,13 @@ function ToolRow({ call, onOpen }: { call: ToolCall; onOpen: (c: ToolCall) => vo
     >
       <div className="tool-head">
         {label} {arg && <span className="arg">{argIsPath(call.name) ? <PathArg p={arg} /> : arg}</span>}
+        {/* an Edit's counts ride along with the path instead of taking a line of their own. The
+            separating space is outside .delta so a long path can still push the pair onto the next
+            line rather than overflowing (.delta itself never breaks). */}
+        {res?.delta && <>{' '}<span className="delta"><span className="add">+{res.delta.add}</span> <span className="del">−{res.delta.del}</span></span></>}
       </div>
-      {res && (
-        <div className={`tool-result-line${res.isError ? ' err' : ''}`}>
-          {res.delta
-            ? <><span className="add">+{res.delta.add}</span> <span className="del">−{res.delta.del}</span></>
-            : res.text}
-        </div>
+      {res && !res.delta && (
+        <div className={`tool-result-line${res.isError ? ' err' : ''}`}>{res.text}</div>
       )}
     </button>
   );

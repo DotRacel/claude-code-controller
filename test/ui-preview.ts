@@ -30,7 +30,8 @@ export interface Preview {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Fixture transcript, minus the trailing `result` so the turn still looks in flight. */
+/** The fixture transcript. Its last turn never got a `result`, so the session reads as in flight —
+ * which is what puts the activity line and the Stop button on screen. */
 function transcript(): any[] {
   return fs.readFileSync(fixture, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
 }

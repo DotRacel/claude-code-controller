@@ -58,16 +58,17 @@
 html { color-scheme: dark; }
 /* The app shell is exactly one viewport tall and never the page scroller — the transcript is.
    `overflow: hidden` on the document enforces that: once the page itself cannot scroll, a mobile
-   browser stops collapsing its URL bar, so the shell's height stops shifting underneath us. */
-html, body, #root { height: 100%; margin: 0; }
+   browser stops collapsing its URL bar, so the shell's height stops shifting underneath us.
+
+   The unit is dvh, and `%` is only the no-dvh fallback. Measured in the installed app on an
+   iPhone 15 Pro Max (Safari 27): innerHeight 932, 100dvh 932, but `height: 100%` → 873, i.e.
+   932 − 59, exactly the top safe-area inset. Under `viewport-fit=cover` with a translucent status
+   bar the initial containing block excludes that inset, so a `%` chain leaves a dead band the
+   height of the Dynamic Island at the BOTTOM of the screen. Chromium does not reproduce this even
+   with the insets overridden (its ICB stays the full viewport), so only a real device catches it —
+   which is why the measurement is written down here. */
+html, body, #root { height: 100%; height: 100dvh; margin: 0; }
 html, body { overflow: hidden; }
-/* Only a browser tab has chrome that collapses, and there `%` (the large viewport) is too tall,
-   so dvh is right. An installed web app has no chrome — and iOS 26.0 mis-measures dvh for
-   viewport-sized containers, leaving a dead band at the bottom of a standalone PWA (Apple fixed
-   it in Safari 26.1). So `%` is both correct there and the safer of the two. */
-@media (display-mode: browser) {
-  html, body, #root { height: 100dvh; }
-}
 body {
   background: var(--surface);
   color: var(--text);
@@ -245,8 +246,9 @@ textarea { font: inherit; }
 .tool-result-line.err { color: var(--danger); }
 /* an Edit's two counts read as a diff: added green, removed red (the sign carries it too, so
    colour is never the only cue — 0c) */
-.tool-result-line .add { color: var(--ok); }
-.tool-result-line .del { color: var(--danger); }
+.delta { font: 600 12.5px/1.45 var(--mono); white-space: nowrap; }
+.delta .add { color: var(--ok); }
+.delta .del { color: var(--danger); }
 
 /* todo card (1c) */
 .todo-list { padding: 11px 12px; display: flex; flex-direction: column; gap: 11px; border-top: 1px solid var(--line); }

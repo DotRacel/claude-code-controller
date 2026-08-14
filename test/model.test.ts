@@ -13,7 +13,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { reduce, reduceAll, initialState, localSend, type Item, type TranscriptState } from '../web/src/model.ts';
+import { reduce, reduceAll, initialState, localSend, turnActiveIn, type Item, type TranscriptState } from '../web/src/model.ts';
 import { resultLine } from '../web/src/tools.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -123,6 +123,20 @@ test('history backfill never flips busy or opens a permission sheet', () => {
   assert.equal(s.live.busy, false);
   // The fixture's can_use_tool is AskUserQuestion (a card), and its turn ended with a result.
   assert.equal(s.live.permission, undefined);
+});
+
+test('an unfinished turn is still recognisable in the backfill', () => {
+  // The reducer keeps busy=false for history, so the view asks separately (ChatView re-derives
+  // `busy` after each backfill) — otherwise reopening a running session shows no Stop button.
+  // The fixture's last turn never got its `result`, which is exactly that case.
+  assert.equal(EVENTS[EVENTS.length - 1].type, 'assistant');
+  assert.equal(turnActiveIn(EVENTS), true, 'a turn with no result is still in flight');
+  assert.equal(turnActiveIn([...EVENTS, { type: 'result', subtype: 'success' }]), false);
+  // Events that are not part of a turn must neither end one nor resurrect one.
+  const finished = [...EVENTS, { type: 'result', subtype: 'success' }, { type: 'system', subtype: 'thinking_tokens', estimated_tokens: 12 }];
+  assert.equal(turnActiveIn(finished), false);
+  assert.equal(turnActiveIn([{ type: 'system', subtype: 'init' }, { type: 'keep_alive' }]), false);
+  assert.equal(turnActiveIn([]), false);
 });
 
 test('a live can_use_tool opens the sheet and marks the call awaiting', () => {

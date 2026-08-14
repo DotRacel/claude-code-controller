@@ -12,7 +12,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ControlSocket, SessionView, Connection, PermissionAnswer } from '../ws.ts';
-import { reduce, initialState, localSend, markQuestionAnswered, clearPermission, type TranscriptState, type ToolCall, type Item } from '../model.ts';
+import { reduce, initialState, localSend, markQuestionAnswered, clearPermission, turnActiveIn, type TranscriptState, type ToolCall, type Item } from '../model.ts';
 import { ItemView, type TranscriptHandlers } from './Transcript.tsx';
 import { Composer } from './Composer.tsx';
 import { PermissionSheet, OutputSheet, MenuSheet } from './Sheets.tsx';
@@ -39,20 +39,27 @@ export function ChatView({ session, sock, connection, onBack, registerEvent, reg
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stateRef = useRef(state);
   stateRef.current = state;
+  // A reconnect re-subscribes and so backfills again (App.tsx); read the status through a ref so
+  // that second backfill sees the current one, not whatever it was when the session was opened.
+  const activeRef = useRef(false);
+  activeRef.current = session.status === 'active';
 
   // Seed "the agent holds the turn" from the list digest, so reopening a busy session shows
   // the Stop button immediately instead of waiting for the next event.
   useEffect(() => {
     setState(() => {
       const s = initialState();
-      return session.digest?.turnActive ? { ...s, live: { ...s.live, busy: true } } : s;
+      return activeRef.current && session.digest?.turnActive ? { ...s, live: { ...s.live, busy: true } } : s;
     });
     sock.subscribe(session.id);
     registerHistory((sid, evs) => {
       if (sid !== session.id) return;
       let s = initialState();
       for (const e of evs) s = reduce(s, e, { isHistory: true });
-      setState(s);
+      // The backfill replaces the whole state, seed included, so `busy` has to be re-derived here
+      // — from the events themselves rather than the digest, which was a snapshot taken when the
+      // session list was built. A session whose claude is gone is never mid-turn.
+      setState({ ...s, live: { ...s.live, busy: activeRef.current && turnActiveIn(evs) } });
     });
     registerEvent((sid, payload) => {
       if (sid !== session.id) return;
@@ -206,7 +213,9 @@ function ActivityLine({ running }: { running?: { name: string; arg: string; sinc
     return () => clearInterval(t);
   }, [running?.since]);
 
-  let text = 'Claude 正在处理…';
+  // With no tool open the spinner is the whole line: the animation says "still working", so there
+  // is no wording left to go stale.
+  let text = '';
   if (running) {
     const s = Math.max(0, Math.round((Date.now() - running.since) / 1000));
     const dur = s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;

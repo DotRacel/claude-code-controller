@@ -13,10 +13,16 @@
 <style>
   html, body { margin: 0; height: 100%; background: #262624; color: #f5f4ef;
     font: 400 15px/1.5 -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif; }
-  /* The three candidate heights, measured rather than assumed. */
+  /* The three candidate heights, measured rather than assumed.
+     The % bar must NOT be position:fixed — a fixed box resolves % against the viewport, so it
+     would always match dvh and hide the very difference this page exists to show. Absolute with
+     no positioned ancestor resolves against the initial containing block, which is the thing
+     that loses the top safe-area inset. */
   #vh100  { position: fixed; top: 0; left: 0; width: 3px; height: 100vh;  background: #7fb069; }
   #dvh100 { position: fixed; top: 0; left: 6px; width: 3px; height: 100dvh; background: #e0b25f; }
-  #pct100 { position: fixed; top: 0; left: 12px; width: 3px; height: 100%; background: #c96442; }
+  #pct100 { position: absolute; top: 0; left: 12px; width: 3px; height: 100%; background: #c96442; }
+  #verdict { margin: 0 0 14px; padding: 10px 12px; border-radius: 10px; font-size: 13px; line-height: 1.6;
+    background: rgba(245,244,239,.05); border: 1px solid rgba(245,244,239,.12); }
   main { padding: max(env(safe-area-inset-top, 0px), 12px) 20px max(env(safe-area-inset-bottom, 0px), 12px) 24px; }
   h1 { font-size: 17px; margin: 0 0 4px; }
   p.sub { margin: 0 0 16px; color: #a8a5a0; font-size: 12.5px; }
@@ -38,7 +44,8 @@
 <div id="vh100"></div><div id="dvh100"></div><div id="pct100"></div>
 <main>
   <h1>视口诊断</h1>
-  <p class="sub">从主屏幕图标打开（不是 Safari 标签页），然后把这一屏发我。左边三条竖线分别是 100vh（绿）/ 100dvh（黄）/ 100%（橙）——谁短谁就在撒谎。</p>
+  <p class="sub">从主屏幕图标打开（不是 Safari 标签页），然后把这一屏发我。左边三条竖线分别是 100vh（绿）/ 100dvh（黄）/ 100%（橙，文档流高度）——谁短谁就在撒谎。</p>
+  <div id="verdict"></div>
   <table id="out"></table>
   <button onclick="copy()">复制全部</button>
   <!-- Standalone has no back button and no address bar; without this you are stuck here. -->
@@ -83,7 +90,8 @@
       ['devicePixelRatio', String(devicePixelRatio), ''],
       ['100vh', `${vh}px`, vh === ih ? '' : 'flag'],
       ['100dvh', `${dvh}px`, dvh === ih ? 'ok' : 'flag'],
-      ['100% (html)', `${pct}px`, pct === ih ? 'ok' : 'flag'],
+      ['100% (文档流/ICB)', `${pct}px`, pct === ih ? 'ok' : 'flag'],
+      ['innerHeight − 100%', `${px(ih - pct)}px`, ih === pct ? 'ok' : 'flag'],
       ['inset top', inset('top'), inset('top') === '0px' ? 'flag' : 'ok'],
       ['inset bottom', inset('bottom'), ''],
       ['inset left/right', `${inset('left')} / ${inset('right')}`, ''],
@@ -92,6 +100,20 @@
     ];
     document.getElementById('out').innerHTML = rows
       .map(([k, v, c]) => `<tr><td class="k">${k}</td><td class="v ${c}">${v}</td></tr>`).join('');
+
+    // Say which unit the app should be built on, so the page answers its own question.
+    const say = [];
+    say.push(dm === 'standalone'
+      ? '<span class="ok">✓ 真的装成 App 了</span>'
+      : `<span class="flag">⚠ display-mode 是 ${dm} —— 这不是从主屏幕图标打开的</span>`);
+    if (dvh === ih && pct === ih) say.push('<span class="ok">✓ dvh 和 % 都等于窗口高度，两种写法都安全</span>');
+    else if (dvh === ih) say.push(`<span class="flag">⚠ 用 dvh</span>：% 比窗口短 ${px(ih - pct)}px（视口顶部安全区没算进 ICB），底部会空出这么多`);
+    else if (pct === ih) say.push(`<span class="flag">⚠ 用 %</span>：dvh 比窗口差 ${px(ih - dvh)}px（iOS 26.0 的 dvh 回归，26.1 已修）`);
+    else say.push(`<span class="flag">⚠ dvh 和 % 都不等于 innerHeight（${px(ih - dvh)}px / ${px(ih - pct)}px）</span>`);
+    say.push(inset('top') === '0px'
+      ? '<span class="flag">⚠ 顶部 inset = 0</span>：iOS 走 manifest 安装路径，状态栏不透明，内容是被系统往下顶的'
+      : `✓ 顶部 inset = ${inset('top')}：状态栏是透明的，那条带子是灵动岛+状态栏的物理占位，必须留`);
+    document.getElementById('verdict').innerHTML = say.join('<br>');
   }
   function copy() {
     const text = rows.map(([k, v]) => `${k}: ${v}`).join('\n');

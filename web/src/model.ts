@@ -443,6 +443,25 @@ export function clearPermission(state: TranscriptState): TranscriptState {
   return d;
 }
 
+/**
+ * Does a backfill end mid-turn? The reducer deliberately never infers `busy` from history — a
+ * replay is not activity — but the REPL bridge replays the whole conversation, so a turn that is
+ * genuinely still in flight arrives as history too, and reopening that session must still show the
+ * Stop button and the activity line.
+ *
+ * Scanning backwards for the last turn boundary is the same rule the server folds into the session
+ * digest (src/server/store.ts, foldDigest): `result` ends a turn, a user or assistant message
+ * starts or continues one, everything else is neutral.
+ */
+export function turnActiveIn(payloads: unknown[]): boolean {
+  for (let i = payloads.length - 1; i >= 0; i--) {
+    const t = (payloads[i] as any)?.type;
+    if (t === 'result') return false;
+    if (t === 'user' || t === 'assistant' || t === 'stream_event') return true;
+  }
+  return false;
+}
+
 export function reduceAll(payloads: unknown[], opts: { isHistory: boolean } = { isHistory: true }): TranscriptState {
   let s = initialState();
   for (const p of payloads) s = reduce(s, p, opts);

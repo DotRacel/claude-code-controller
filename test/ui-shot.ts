@@ -160,11 +160,21 @@ const PROBE = `(() => {
     const r = e.getBoundingClientRect();
     return String(e.className).trim().split(/\\s+/)[0] + '(' + Math.round(r.height) + ')';
   });
+  // The unit trap the installed app hit: under viewport-fit=cover with a translucent status bar,
+  // WebKit resolves height:100% against an ICB that excludes the top inset (measured: 873 of 932
+  // on a 15 Pro Max) while dvh matches the window. Chromium does NOT reproduce it — even with the
+  // insets overridden its ICB stays the full viewport — so these numbers come out equal here and
+  // the check only bites on a real device or if a percentage chain breaks some other way.
+  // (No backticks anywhere in this probe — it lives in a template literal.)
+  const unit = (css) => { const d = document.createElement('div');
+    d.style.cssText = 'position:fixed;top:0;left:0;width:0;height:' + css;
+    document.body.appendChild(d); const h = Math.round(d.getBoundingClientRect().height); d.remove(); return h; };
+  const heights = { innerHeight: vh, dvh: unit('100dvh'), vhUnit: unit('100vh'), icb: document.documentElement.clientHeight };
   const scroller = document.querySelector('.scroll');
   // What the safe-area insets actually resolved to, where they matter.
   const padOf = (sel, side) => { const e = document.querySelector(sel); return e ? getComputedStyle(e)['padding' + side] : null; };
   return {
-    vw, vh, dpr: devicePixelRatio, items,
+    vw, vh, dpr: devicePixelRatio, items, heights,
     standalone: matchMedia('(display-mode: standalone)').matches,
     pads: { topbar: padOf('.topbar', 'Top') ?? padOf('.topbar-lg', 'Top'), composer: padOf('.composer-wrap', 'Bottom'), sheet: padOf('.sheet', 'Bottom') },
     scrollTop: scroller ? Math.round(scroller.scrollTop) : null,
@@ -316,6 +326,8 @@ async function main() {
       console.log(`\n── ${d.name} / ${s.name} ──`);
       console.log(`viewport ${probe.vw}×${probe.vh}  doc ${probe.docScrollW}×${probe.docScrollH}  scrollTop ${probe.scrollTop}/${probe.scrollMax}  standalone=${probe.standalone}`);
       console.log(`  pads: topbar-top ${probe.pads.topbar}  composer-bottom ${probe.pads.composer}  sheet-bottom ${probe.pads.sheet ?? '—'}`);
+      const H = probe.heights;
+      console.log(`  heights: innerHeight ${H.innerHeight}  100dvh ${H.dvh}  100vh ${H.vhUnit}  ICB(100%) ${H.icb}${H.icb !== H.innerHeight ? `  ⚠ % is ${H.innerHeight - H.icb}px short` : ''}`);
       if (probe.items?.length) console.log(`  items: ${probe.items.join(' ')}`);
       for (const b of probe.boxes) console.log(`  ${b.sel.padEnd(15)} y ${String(b.top).padStart(7)} → ${String(b.bottom).padStart(7)}  h ${String(b.h).padStart(7)}  x ${b.left}→${b.right}  scroll ${b.scrollW}×${b.scrollH} / client ${b.clientW}×${b.clientH}`);
       if (probe.overflow.length) console.log(`  ⚠ horizontal overflow:`, JSON.stringify(probe.overflow));
