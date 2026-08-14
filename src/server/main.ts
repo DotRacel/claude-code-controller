@@ -49,6 +49,11 @@ async function main() {
       else if (e.type === 'ws.connect') console.log(`${ts()} session online ses=${e.sessionId}`);
       else if (e.type === 'ws.close') console.log(`${ts()} session offline ses=${e.sessionId}`);
       else if (e.type === 'env.deregister') console.log(`${ts()} env.deregister env=${e.envId}`);
+      // Shell fetches only. A phone whose service worker is serving a stale bundle requests
+      // NOTHING here, which is itself the answer when a fix appears not to have landed.
+      else if (e.type === 'http' && (e.path === '/' || e.path === '/sw.js' || e.path.startsWith('/assets/'))) {
+        console.log(`${ts()} GET ${e.path}`);
+      }
     },
   });
 

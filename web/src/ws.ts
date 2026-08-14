@@ -38,6 +38,25 @@ export interface Handlers {
   onStatus?: (c: Connection) => void;
 }
 
+/** Build hash + the numbers that decide whether the shell is laid out correctly. */
+function clientInfo(): string {
+  try {
+    const src = document.querySelector<HTMLScriptElement>('script[src*="assets/index-"]')?.src ?? '';
+    const build = /index-([A-Za-z0-9_-]+)\./.exec(src)?.[1] ?? 'dev';
+    const root = document.getElementById('root');
+    const r = root?.getBoundingClientRect();
+    const mode = ['standalone', 'fullscreen', 'minimal-ui', 'browser'].find((x) => matchMedia(`(display-mode: ${x})`).matches) ?? '?';
+    const probe = document.createElement('div');
+    probe.style.cssText = 'position:absolute;top:0;left:0;width:0;height:100%';
+    document.body.appendChild(probe);
+    const icb = Math.round(probe.getBoundingClientRect().height);
+    probe.remove();
+    return `build=${build} mode=${mode} win=${innerWidth}x${innerHeight} shell=${r ? `${Math.round(r.top)}→${Math.round(r.bottom)}` : '?'} icb=${icb}`;
+  } catch {
+    return 'info-failed';
+  }
+}
+
 export class ControlSocket {
   private ws: WebSocket | null = null;
   private closed = false;
@@ -50,7 +69,14 @@ export class ControlSocket {
     this.h.onStatus?.('connecting');
     const ws = new WebSocket(`${proto}://${location.host}/ws/client?credential=${encodeURIComponent(this.credential)}`);
     this.ws = ws;
-    ws.onopen = () => { this.retry = 0; this.h.onStatus?.('online'); };
+    ws.onopen = () => {
+      this.retry = 0;
+      this.h.onStatus?.('online');
+      // Report what this copy is actually running. On an installed iOS app the service worker can
+      // keep serving an old bundle with no network request at all, so the server otherwise has no
+      // way to know which build a phone is on — and neither do we.
+      this.send({ type: 'hello', info: clientInfo() });
+    };
     ws.onmessage = (e) => {
       let m: any;
       try { m = JSON.parse(e.data); } catch { return; }
