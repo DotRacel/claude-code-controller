@@ -215,17 +215,23 @@ textarea { font: inherit; }
   top: 0;
   left: 0;
   right: 0;
-  /* The 22px tail fades out BELOW the header, so the header's own area is fully frosted and the
+  /* The 22px tail fades out BELOW the header, so the header's own area is fully covered and the
      transcript's top padding can clear the tail exactly. Fixed rather than a percentage: a
      proportional tail dimmed the first card while the transcript was at rest. */
   height: calc(var(--header-h, 110px) + 22px);
   z-index: 20;
   pointer-events: none; /* the tail hangs over the transcript; it must not swallow taps */
-  -webkit-backdrop-filter: blur(16px) saturate(1.35);
-  backdrop-filter: blur(16px) saturate(1.35);
-  background: rgba(38, 38, 36, .78); /* --surface, kept translucent: opaque would hide the blur */
-  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent);
-  mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent);
+  /* Opaque gradient, NOT backdrop-filter. Measured on the device: with a blurring layer here the
+     whole header interior was blurred (mean horizontal gradient across the title 0.4–1.6 versus
+     7.3–8.3 for transcript text 40px lower) even though the header sits above it at z-index 21.
+     WebKit's backdrop root does not respect that ordering the way Chromium's does, so the layer
+     blurred its own siblings. A solid fade needs no compositing trick and cannot regress. */
+  background: linear-gradient(
+    to bottom,
+    var(--surface) 0,
+    var(--surface) calc(100% - 22px),
+    rgba(38, 38, 36, 0) 100%
+  );
 }
 .header { position: absolute; top: 0; left: 0; right: 0; z-index: 21; }
 

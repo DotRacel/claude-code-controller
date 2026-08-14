@@ -73,12 +73,22 @@ function clientInfo(): string {
       d.remove();
       return h;
     };
+    // The whole percentage chain from the shell down to the composer. When a band appears at the
+    // bottom, exactly one of these boxes is where the height gets lost — and reading it off the
+    // device beats deducing it from a screenshot.
+    const chain = ['.desktop-stage', '.phone-frame', '.screen', '.scroll', '.composer-wrap', '.composer']
+      .map((sel) => {
+        const b = document.querySelector(sel)?.getBoundingClientRect();
+        return b ? `${sel.slice(1)}:${Math.round(b.top)}→${Math.round(b.bottom)}` : `${sel.slice(1)}:-`;
+      })
+      .join(' ');
     const comp = document.querySelector('.composer')?.getBoundingClientRect();
     return `build=${build} mode=${mode} win=${innerWidth}x${innerHeight} screen=${screen.width}x${screen.height}`
       + ` shell=${r ? `${Math.round(r.top)}→${Math.round(r.bottom)}` : '?'} icb=${icb}`
       + ` vh/dvh/svh/lvh=${unit('vh')}/${unit('dvh')}/${unit('svh')}/${unit('lvh')}`
       + ` insets=${inset('top')}/${inset('bottom')}`
-      + (comp ? ` gap=${Math.round(screen.height - comp.bottom)}` : '');
+      + (comp ? ` gap=${Math.round(screen.height - comp.bottom)}` : '')
+      + ` | ${chain}`;
   } catch {
     return 'info-failed';
   }
