@@ -95,36 +95,6 @@ const MODES: Array<{ id: string; label: string }> = [
   { id: 'bypassPermissions', label: '不再询问' },
 ];
 
-/**
- * Unregister the worker, drop every cache, reload off the network. The escape hatch for an
- * installed iOS app that has frozen on an old bundle — which it can, because a home-screen launch
- * resumes instead of navigating, so nothing triggers an update check (see main.tsx). The reload
- * carries a throwaway query because a bare reload can still be answered from the HTTP cache.
- */
-async function hardUpdate(): Promise<void> {
-  try {
-    const regs = (await navigator.serviceWorker?.getRegistrations?.()) ?? [];
-    await Promise.all(regs.map((r) => r.unregister()));
-  } catch { /* best effort */ }
-  try {
-    const keys = await caches.keys();
-    await Promise.all(keys.map((k) => caches.delete(k)));
-  } catch { /* best effort */ }
-  location.replace(`./?u=${Date.now()}`);
-}
-
-/** `index-<hash>.js` is Vite's content hash, so it identifies the build without a version file. */
-function buildInfo(): string {
-  const src = document.querySelector<HTMLScriptElement>('script[src*="assets/index-"]')?.src ?? '';
-  const build = /index-([A-Za-z0-9_-]+)\./.exec(src)?.[1] ?? 'dev';
-  // #root is the shell (fixed, 100dvh). <html> is NOT: under viewport-fit=cover its box is the
-  // short ICB, which is the whole reason the shell had to escape normal flow.
-  const el = document.getElementById('root') ?? document.documentElement;
-  const r = el.getBoundingClientRect();
-  const fits = Math.abs(r.top) < 1 && Math.abs(r.bottom - window.innerHeight) < 1;
-  return `build ${build} · 外壳 ${Math.round(r.top)}→${Math.round(r.bottom)} / ${window.innerHeight}${fits ? ' ✓' : ' ⚠'}`;
-}
-
 export function MenuSheet({ meta, mode, onMode, onExport, onEnd, onDismiss }: {
   meta: string;
   mode?: string;
@@ -137,10 +107,6 @@ export function MenuSheet({ meta, mode, onMode, onExport, onEnd, onDismiss }: {
   return (
     <Sheet onDismiss={onDismiss}>
       <div className="menu-meta">{meta}</div>
-      {/* Which build this installed copy is actually running, and the shell's real box. A PWA can
-          sit on a stale service-worker cache for days, and diag.html cannot measure the app around
-          it — so without this "is the fix live on the phone?" is unanswerable. */}
-      <div className="menu-meta" style={{ opacity: .65 }}>{buildInfo()}</div>
       {modes ? (
         <>
           <div className="menu-label">权限模式</div>
@@ -159,14 +125,6 @@ export function MenuSheet({ meta, mode, onMode, onExport, onEnd, onDismiss }: {
             <Gear size={18} />权限模式<span className="val">{MODES.find((m) => m.id === mode)?.label ?? mode ?? '—'}</span>
           </button>
           <button className="menu-row" onClick={() => { onExport(); onDismiss(); }}><Download size={18} />复制转录（Markdown）</button>
-          {/* An installed web app has no address bar, so this is the only way to reach the viewport
-              diagnostic on the device it is meant to diagnose. Same scope ⇒ stays standalone. */}
-          <button className="menu-row" onClick={() => { location.href = './diag.html'; }}>
-            <Info size={18} />视口诊断<span className="val">/diag.html</span>
-          </button>
-          <button className="menu-row" onClick={() => { haptic('medium'); void hardUpdate(); }}>
-            <Download size={18} />强制更新（清缓存重载）
-          </button>
           {/* Rename and archive need columns the sessions table does not have yet. */}
           <button className="menu-row" disabled style={{ opacity: .4 }}><Pencil size={18} />重命名会话<span className="val">下一版</span></button>
           <button className="menu-row" disabled style={{ opacity: .4 }}><Archive size={18} />归档<span className="val">下一版</span></button>

@@ -73,8 +73,8 @@ html { color-scheme: dark; }
    broken in the installed app".
 
    A fixed box is laid out against the viewport instead of the ICB, so it is neither short nor
-   clipped. diag.html demonstrates it on the device: its 100vh/100dvh bars are `position: fixed`
-   and visibly extend past the absolutely-positioned (ICB-relative) one.
+   clipped — measured on the device, a fixed box reaches the screen bottom while an
+   absolutely-positioned (ICB-relative) one stops 59px short.
 
    `overflow: hidden` on the document stays: the shell must never be the page scroller — the
    transcript is — and a document that cannot scroll also stops a browser collapsing its URL bar. */
@@ -83,7 +83,7 @@ html, body { height: 100%; margin: 0; overflow: hidden; }
 @supports not (height: 100dvh) {
   #root { bottom: 0; height: auto; }
 }
-/* …and in an installed app, `lvh`. Measured on the device (client hello): the window reports
+/* …and in an installed app, `lvh`. Measured on the device: the window reports
    430×873 on a 932pt screen while the insets are a correct 59/34 — i.e. innerHeight, and with it
    dvh, is short by the height of a Safari toolbar that is not even on screen. It is the iOS 26
    viewport miscalculation ("as if Safari's toolbar were still present although it's hidden"), and

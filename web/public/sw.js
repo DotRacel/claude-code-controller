@@ -1,7 +1,6 @@
 /* Claude Remote shell worker. Never intercepts /v1 or /ws. */
-// Bump on every deploy that must not be served from an old cache. v5: the shell gained the
-// floating frosted header and the self-update logic in main.tsx.
-const CACHE = 'ccc-web-v5';
+// Bump on every deploy that must not be served from an old cache.
+const CACHE = 'ccc-web-v6';
 const PRECACHE = [
   './',
   './index.html',
@@ -38,8 +37,7 @@ self.addEventListener('activate', (event) => {
 });
 
 function isPassthrough(url) {
-  // /diag.html is the viewport diagnostic — a cached copy would report stale numbers after a fix.
-  return url.pathname.startsWith('/v1') || url.pathname.startsWith('/ws') || url.pathname === '/diag.html';
+  return url.pathname.startsWith('/v1') || url.pathname.startsWith('/ws');
 }
 
 self.addEventListener('notificationclick', (event) => {

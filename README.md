@@ -320,18 +320,13 @@ frosted header now does deliberately.
 appeared to change nothing on the phone while being correct in a browser. The update check only
 runs on *navigation*, and iOS resumes a standalone app rather than navigating, so it kept whatever
 bundle it first installed — and standalone mode does not share Cache Storage with Safari, hence
-"fine in Safari, unchanged in the app". `main.tsx` now registers with `updateViaCache: 'none'`,
-calls `registration.update()` on every foreground and hourly, and reloads once on
-`controllerchange`; the session menu has a 强制更新 row (unregister every worker, drop every cache,
-reload past the HTTP cache) for a copy that is already frozen.
+"fine in Safari, unchanged in the app". `main.tsx` registers with `updateViaCache: 'none'`, calls
+`registration.update()` on every foreground and hourly, and reloads once on `controllerchange`.
+This is the one piece of that episode worth keeping: without it no later fix can reach a phone.
 
-**The browser reports what it is actually running.** On every socket connect the page sends a
-`hello` with its build hash, display-mode, window and screen size, shell box, ICB, all four
-viewport units, the insets and the measured gap under the composer; the server logs it, as it does
-shell fetches (`/`, `/sw.js`, `/assets/*`). This is not telemetry for its own sake: a frozen app
-requests *nothing*, so silence in the log is itself the diagnosis, and the numbers above were only
-obtainable this way. `diag.html` can measure a browser, but not the app around it — and asking a
-human to read numbers off a phone screen is both slow and, as it turned out, ambiguous.
+The measurements above came from temporary instrumentation (a `/diag.html` page, a build/shell
+readout in the session menu, a `hello` frame reporting the box chain on connect). It is all
+removed — the findings live in the CSS comments, which is where they are useful.
 
 `web/public/diag.html` (served at `/diag.html`, deliberately excluded from the service worker
 cache) is the device-side counterpart: open it from the home-screen icon and it reports

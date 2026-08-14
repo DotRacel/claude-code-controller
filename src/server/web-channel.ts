@@ -112,18 +112,6 @@ export function attachWebChannel(server: Server, api: WebApi, store: Store) {
     let m: any;
     try { m = JSON.parse(text); } catch { return; }
     switch (m?.type) {
-      // Which bundle the browser is ACTUALLY running, reported by the page itself. An installed
-      // iOS web app can serve an old bundle from its service-worker cache indefinitely, and no
-      // amount of looking at the server tells you that — the phone never asks for anything. This
-      // is the only way to know a fix reached the device without asking its owner to go hunting.
-      case 'hello': {
-        // Timestamped and untruncated on purpose: correlating a report with a screenshot needs
-        // the clock, and 200 chars was cutting off the tail of the box chain — which is the half
-        // that says where a layout goes wrong.
-        const at = new Date().toISOString().slice(11, 23);
-        console.log(`${at} [web] hello cred=${ws.credential.slice(0, 8)}… ${String(m.info ?? '').slice(0, 600)}`);
-        break;
-      }
       case 'subscribe':
         if (owns(ws, m.sessionId)) {
           // Subscribe first (so nothing is dropped), buffer, backfill, then drain.
