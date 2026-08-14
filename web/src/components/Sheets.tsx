@@ -117,7 +117,10 @@ async function hardUpdate(): Promise<void> {
 function buildInfo(): string {
   const src = document.querySelector<HTMLScriptElement>('script[src*="assets/index-"]')?.src ?? '';
   const build = /index-([A-Za-z0-9_-]+)\./.exec(src)?.[1] ?? 'dev';
-  const r = document.documentElement.getBoundingClientRect();
+  // #root is the shell (fixed, 100dvh). <html> is NOT: under viewport-fit=cover its box is the
+  // short ICB, which is the whole reason the shell had to escape normal flow.
+  const el = document.getElementById('root') ?? document.documentElement;
+  const r = el.getBoundingClientRect();
   const fits = Math.abs(r.top) < 1 && Math.abs(r.bottom - window.innerHeight) < 1;
   return `build ${build} · 外壳 ${Math.round(r.top)}→${Math.round(r.bottom)} / ${window.innerHeight}${fits ? ' ✓' : ' ⚠'}`;
 }

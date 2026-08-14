@@ -56,19 +56,33 @@
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html { color-scheme: dark; }
-/* The app shell is exactly one viewport tall and never the page scroller — the transcript is.
-   `overflow: hidden` on the document enforces that: once the page itself cannot scroll, a mobile
-   browser stops collapsing its URL bar, so the shell's height stops shifting underneath us.
+/* ── the app shell, and why it is FIXED rather than merely one viewport tall ──
+   Measured in the installed app on an iPhone 15 Pro Max (Safari 27), viewport-fit=cover with a
+   translucent status bar:
 
-   The unit is dvh, and `%` is only the no-dvh fallback. Measured in the installed app on an
-   iPhone 15 Pro Max (Safari 27): innerHeight 932, 100dvh 932, but `height: 100%` → 873, i.e.
-   932 − 59, exactly the top safe-area inset. Under `viewport-fit=cover` with a translucent status
-   bar the initial containing block excludes that inset, so a `%` chain leaves a dead band the
-   height of the Dynamic Island at the BOTTOM of the screen. Chromium does not reproduce this even
-   with the insets overridden (its ICB stays the full viewport), so only a real device catches it —
-   which is why the measurement is written down here. */
-html, body, #root { height: 100%; height: 100dvh; margin: 0; }
-html, body { overflow: hidden; }
+     screen / innerHeight / 100dvh   932
+     initial containing block        873   ( = 932 − 59, exactly the top safe-area inset )
+     ICB top offset                    0
+
+   So under `cover` the ICB is SHORTER than the screen and sits at the top: the bottom 59px of the
+   display is not part of the normal-flow layout viewport at all. Every in-flow height therefore
+   loses, in two different ways — `height: 100%` is 873 and stops 59px short of the bottom, while
+   `height: 100dvh` is 932 and gets clipped back to 873 by html's `overflow: hidden`. Both leave the
+   same band of bare canvas along the bottom edge, which is exactly the reported symptom. In a
+   Safari TAB the top inset is 0, ICB == screen, and neither goes wrong — hence "fine in Safari,
+   broken in the installed app".
+
+   A fixed box is laid out against the viewport instead of the ICB, so it is neither short nor
+   clipped. diag.html demonstrates it on the device: its 100vh/100dvh bars are `position: fixed`
+   and visibly extend past the absolutely-positioned (ICB-relative) one.
+
+   `overflow: hidden` on the document stays: the shell must never be the page scroller — the
+   transcript is — and a document that cannot scroll also stops a browser collapsing its URL bar. */
+html, body { height: 100%; margin: 0; overflow: hidden; }
+#root { position: fixed; top: 0; left: 0; right: 0; height: 100dvh; }
+@supports not (height: 100dvh) {
+  #root { bottom: 0; height: auto; }
+}
 body {
   background: var(--surface);
   color: var(--text);
@@ -176,29 +190,31 @@ textarea { font: inherit; }
 
    --header-h is measured in ChatView: the connection banner makes the height dynamic, and the
    transcript's top padding has to match it. */
-.header { position: absolute; top: 0; left: 0; right: 0; z-index: 20; }
-.header::before {
-  content: '';
+/* The frost is a SEPARATE SIBLING that precedes the header, not the header's own ::before with a
+   negative z-index. Paint order across engines is the whole difficulty here: an absolutely
+   positioned box paints in a later step than in-flow content, so a naive ::before covers the
+   header's own title (observed in Chromium), and the `z-index: -1` that fixes it depends on how an
+   engine computes the backdrop root for `backdrop-filter` — WebKit and Chromium disagree, and a
+   blurred TITLE is exactly what that disagreement looks like. Two siblings with explicit z-index
+   have no ambiguity to get wrong: 20 frosts, 21 stays sharp on top of it. */
+.header-frost {
   position: absolute;
+  top: 0;
   left: 0;
   right: 0;
-  top: 0;
-  /* Taller than the header so the fade-out happens BELOW it: masking the header's own area would
-     leave the title sitting on unfrosted content. A fixed 22px tail rather than a percentage, so
-     the transcript's top padding can clear it exactly (a 50% tail dimmed the first card at rest). */
-  height: calc(100% + 22px);
-  /* z-index and pointer-events are both load-bearing. An absolutely positioned box paints in a
-     LATER step than its in-flow siblings, so without -1 the frost covers the header's own title
-     and buttons; and the part hanging below the header would otherwise swallow taps on the
-     transcript underneath. */
-  z-index: -1;
-  pointer-events: none;
+  /* The 22px tail fades out BELOW the header, so the header's own area is fully frosted and the
+     transcript's top padding can clear the tail exactly. Fixed rather than a percentage: a
+     proportional tail dimmed the first card while the transcript was at rest. */
+  height: calc(var(--header-h, 110px) + 22px);
+  z-index: 20;
+  pointer-events: none; /* the tail hangs over the transcript; it must not swallow taps */
   -webkit-backdrop-filter: blur(16px) saturate(1.35);
   backdrop-filter: blur(16px) saturate(1.35);
   background: rgba(38, 38, 36, .78); /* --surface, kept translucent: opaque would hide the blur */
   -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent);
   mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent);
 }
+.header { position: absolute; top: 0; left: 0; right: 0; z-index: 21; }
 
 /* Safe areas use max(inset, gap), never inset + gap. Two reasons: with a real inset (a
    translucent status bar over the Dynamic Island) the extra gap is dead space stacked on top of

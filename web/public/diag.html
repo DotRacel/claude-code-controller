@@ -90,6 +90,13 @@
     document.body.appendChild(probe);
     const dr = probe.getBoundingClientRect();
     probe.remove();
+    // Fixed is laid out against the viewport, absolute against the (possibly shorter) ICB. That
+    // difference is what the app shell now relies on, so measure it directly.
+    const fx = document.createElement('div');
+    fx.style.cssText = 'position:fixed;top:0;left:0;width:0;height:100dvh';
+    document.body.appendChild(fx);
+    const fr = fx.getBoundingClientRect();
+    fx.remove();
     const icbTop = document.getElementById('pct100').getBoundingClientRect().top; // absolute, top:0
     rows = [
       ['display-mode', dm, dm === 'standalone' ? 'ok' : 'flag'],
@@ -103,7 +110,8 @@
       ['100% (文档流/ICB)', `${pct}px`, pct === ih ? 'ok' : 'flag'],
       ['innerHeight − 100%', `${px(ih - pct)}px`, ih === pct ? 'ok' : 'flag'],
       // dvh box = what the app's shell does. html box = this page's own % chain (expected short).
-      ['dvh 盒子 y（=App 外壳）', `${px(dr.top)} → ${px(dr.bottom)}`, Math.abs(dr.top) < 1 && Math.abs(dr.bottom - ih) < 1 ? 'ok' : 'flag'],
+      ['fixed+100dvh（=App 外壳）', `${px(fr.top)} → ${px(fr.bottom)}`, Math.abs(fr.top) < 1 && Math.abs(fr.bottom - ih) < 1 ? 'ok' : 'flag'],
+      ['absolute+100dvh（对照）', `${px(dr.top)} → ${px(dr.bottom)}`, ''],
       ['本页 &lt;html&gt; 盒子 y（%，对照）', `${px(hr.top)} → ${px(hr.bottom)}`, ''],
       ['ICB 顶部偏移', `${px(icbTop)}px`, Math.abs(icbTop) < 1 ? 'ok' : 'flag'],
       ['inset top', inset('top'), inset('top') === '0px' ? 'flag' : 'ok'],
@@ -124,9 +132,10 @@
     else if (dvh === ih) say.push(`<span class="flag">⚠ 用 dvh</span>：% 比窗口短 ${px(ih - pct)}px（视口顶部安全区没算进 ICB），底部会空出这么多`);
     else if (pct === ih) say.push(`<span class="flag">⚠ 用 %</span>：dvh 比窗口差 ${px(ih - dvh)}px（iOS 26.0 的 dvh 回归，26.1 已修）`);
     else say.push(`<span class="flag">⚠ dvh 和 % 都不等于 innerHeight（${px(ih - dvh)}px / ${px(ih - pct)}px）</span>`);
-    say.push(Math.abs(dr.top) < 1 && Math.abs(dr.bottom - ih) < 1
-      ? `<span class="ok">✓ dvh 盒子正好是 0 → ${px(ih)}</span>：App 外壳严丝合缝，底部空白只可能来自 padding`
-      : `<span class="flag">⚠ dvh 盒子是 ${px(dr.top)} → ${px(dr.bottom)}，不是 0 → ${px(ih)}</span>：外壳本身就偏了`);
+    say.push(Math.abs(fr.top) < 1 && Math.abs(fr.bottom - ih) < 1
+      ? `<span class="ok">✓ fixed+100dvh 正好是 0 → ${px(ih)}</span>：App 外壳能铺满全屏，底部空白只可能来自 padding`
+      : `<span class="flag">⚠ fixed+100dvh 是 ${px(fr.top)} → ${px(fr.bottom)}，不是 0 → ${px(ih)}</span>：连 fixed 都铺不满`);
+    if (pct !== ih) say.push(`↳ 而常规流只有 ${px(pct)}px（差 ${px(ih - pct)}px）——这就是"底部像给 Safari 地址栏留了一条"的来源：那 ${px(ih - pct)}px 不属于常规流的布局视口。`);
     say.push('注意：下面「本页 &lt;html&gt; 盒子」是本页自己的 % 链（故意的对照组），不代表 App。App 的实际构建号和外壳尺寸请看 App 里「…」菜单顶部那行。');
     say.push(inset('top') === '0px'
       ? '<span class="flag">⚠ 顶部 inset = 0</span>：iOS 走 manifest 安装路径，状态栏不透明，内容是被系统往下顶的'

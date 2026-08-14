@@ -160,8 +160,10 @@ export function ChatView({ session, sock, connection, onBack, registerEvent, reg
 
   return (
     <div className="screen" ref={screenRef}>
-      {/* Floats over the transcript and frosts whatever scrolls beneath it, so the strip behind the
-          status bar / Dynamic Island is used instead of reserved. */}
+      {/* Two layers, deliberately siblings: .header-frost blurs whatever scrolls beneath (so the
+          strip behind the status bar / Dynamic Island is used instead of reserved) and .header
+          sits above it with an explicit z-index, so the title can never be caught by the blur. */}
+      <div className="header-frost" aria-hidden />
       <div className="header" ref={headerRef}>
         <div className="topbar">
           <button className="icon-btn" aria-label="返回" onClick={onBack}><Back size={18} /></button>
