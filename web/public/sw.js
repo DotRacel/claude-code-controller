@@ -1,6 +1,7 @@
 /* Claude Remote shell worker. Never intercepts /v1 or /ws. */
-// v4: the icons became the official Claude mark — a stale cache would keep serving the old ones.
-const CACHE = 'ccc-web-v4';
+// Bump on every deploy that must not be served from an old cache. v5: the shell gained the
+// floating frosted header and the self-update logic in main.tsx.
+const CACHE = 'ccc-web-v5';
 const PRECACHE = [
   './',
   './index.html',

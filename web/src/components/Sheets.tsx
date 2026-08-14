@@ -95,6 +95,24 @@ const MODES: Array<{ id: string; label: string }> = [
   { id: 'bypassPermissions', label: '不再询问' },
 ];
 
+/**
+ * Unregister the worker, drop every cache, reload off the network. The escape hatch for an
+ * installed iOS app that has frozen on an old bundle — which it can, because a home-screen launch
+ * resumes instead of navigating, so nothing triggers an update check (see main.tsx). The reload
+ * carries a throwaway query because a bare reload can still be answered from the HTTP cache.
+ */
+async function hardUpdate(): Promise<void> {
+  try {
+    const regs = (await navigator.serviceWorker?.getRegistrations?.()) ?? [];
+    await Promise.all(regs.map((r) => r.unregister()));
+  } catch { /* best effort */ }
+  try {
+    const keys = await caches.keys();
+    await Promise.all(keys.map((k) => caches.delete(k)));
+  } catch { /* best effort */ }
+  location.replace(`./?u=${Date.now()}`);
+}
+
 /** `index-<hash>.js` is Vite's content hash, so it identifies the build without a version file. */
 function buildInfo(): string {
   const src = document.querySelector<HTMLScriptElement>('script[src*="assets/index-"]')?.src ?? '';
@@ -142,6 +160,9 @@ export function MenuSheet({ meta, mode, onMode, onExport, onEnd, onDismiss }: {
               diagnostic on the device it is meant to diagnose. Same scope ⇒ stays standalone. */}
           <button className="menu-row" onClick={() => { location.href = './diag.html'; }}>
             <Info size={18} />视口诊断<span className="val">/diag.html</span>
+          </button>
+          <button className="menu-row" onClick={() => { haptic('medium'); void hardUpdate(); }}>
+            <Download size={18} />强制更新（清缓存重载）
           </button>
           {/* Rename and archive need columns the sessions table does not have yet. */}
           <button className="menu-row" disabled style={{ opacity: .4 }}><Pencil size={18} />重命名会话<span className="val">下一版</span></button>
