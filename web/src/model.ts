@@ -322,9 +322,20 @@ function assistant(d: Draft, p: any, ts: number | undefined, isHistory: boolean)
   return d;
 }
 
+/**
+ * The agent has taken a turn we sent while it was busy, so that bubble is no longer queued.
+ * Oldest match first: `pendingWeb` is consumed FIFO, so two identical queued texts settle in
+ * the order they were sent.
+ */
+function settleQueued(d: Draft, text: string): void {
+  const at = d.items.findIndex((i) => i.kind === 'user' && i.state === 'queued' && i.text === text);
+  if (at >= 0) d.items[at] = { ...(d.items[at] as Extract<Item, { kind: 'user' }>), state: 'sent' };
+}
+
 function user(d: Draft, p: any, ts: number | undefined, isHistory: boolean): TranscriptState {
   const taken = takeVisibleUserTexts(p, d.pendingWeb, isHistory);
   d.pendingWeb = taken.pendingWeb;
+  for (const text of taken.consumed) settleQueued(d, text);
   for (const text of taken.texts) {
     push(d, { kind: 'user', text, state: 'sent' });
     if (!isHistory) d.live.busy = true;

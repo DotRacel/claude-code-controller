@@ -196,6 +196,28 @@ test('a queued follow-up is marked queued while the agent holds the turn', () =>
   assert.equal(only(s, 'user')[0].state, 'queued');
 });
 
+test('a queued bubble settles once the worker echoes that turn back', () => {
+  let s = initialState();
+  s = reduce(s, { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: '在做了' }] } }, { isHistory: false });
+  s = localSend(s, '再补一句', s.live.busy);
+  assert.equal(only(s, 'user')[0].state, 'queued');
+  // The echo is the agent saying it has taken the turn — the bubble stops being queued, and
+  // is still not duplicated.
+  s = reduce(s, { type: 'user', isReplay: true, message: { role: 'user', content: '再补一句' } }, { isHistory: false });
+  assert.deepEqual(only(s, 'user').map((u) => [u.text, u.state]), [['再补一句', 'sent']]);
+});
+
+test('identical queued texts settle oldest-first, one echo at a time', () => {
+  let s = initialState();
+  s = reduce(s, { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: '在做了' }] } }, { isHistory: false });
+  s = localSend(s, '继续', true);
+  s = localSend(s, '继续', true);
+  s = reduce(s, { type: 'user', isReplay: true, message: { role: 'user', content: '继续' } }, { isHistory: false });
+  assert.deepEqual(only(s, 'user').map((u) => u.state), ['sent', 'queued']);
+  s = reduce(s, { type: 'user', isReplay: true, message: { role: 'user', content: '继续' } }, { isHistory: false });
+  assert.deepEqual(only(s, 'user').map((u) => u.state), ['sent', 'sent']);
+});
+
 test('result lines summarise instead of dumping output', () => {
   const call = (name: string, input: any, result: string) => ({ toolUseId: 't', name, input, status: 'ok' as const, result });
   assert.equal(resultLine(call('Read', { file_path: '/a/b.ts' }, '1\tone\n2\ttwo\n3\tthree'))!.text, '读了 3 行');

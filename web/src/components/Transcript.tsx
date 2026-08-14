@@ -35,7 +35,6 @@ export const ItemView = memo(function ItemView({ it, isLast, h }: { it: Item; is
       return (
         <div className={`bubble-user${it.state === 'queued' ? ' queued' : ''} ${cls ?? ''}`}>
           {it.text}
-          {it.state === 'queued' && <span className="queued-tag">排队中 · Claude 正忙</span>}
         </div>
       );
     case 'prose':

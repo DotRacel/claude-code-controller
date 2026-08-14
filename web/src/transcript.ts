@@ -16,16 +16,20 @@ import { userTextsFrom } from '../../src/transcript-text.ts';
  * Decide which user texts to append.
  * Live echoes that match a pending web-sent string are consumed (already on screen).
  * Everything else — history, and live terminal turns — is returned to render.
+ *
+ * `consumed` names the echoes we dropped. The echo is the worker telling us the agent has
+ * actually taken that turn, which is the only signal that a queued bubble is no longer queued.
  */
-export function takeVisibleUserTexts(payload: any, pendingWeb: string[], isHistory: boolean): { texts: string[]; pendingWeb: string[] } {
+export function takeVisibleUserTexts(payload: any, pendingWeb: string[], isHistory: boolean): { texts: string[]; pendingWeb: string[]; consumed: string[] } {
   const next = pendingWeb.slice();
   const texts: string[] = [];
+  const consumed: string[] = [];
   for (const t of userTextsFrom(payload)) {
     if (!isHistory) {
       const i = next.indexOf(t);
-      if (i >= 0) { next.splice(i, 1); continue; }
+      if (i >= 0) { next.splice(i, 1); consumed.push(t); continue; }
     }
     texts.push(t);
   }
-  return { texts, pendingWeb: next };
+  return { texts, pendingWeb: next, consumed };
 }

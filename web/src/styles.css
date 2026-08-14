@@ -296,8 +296,9 @@ textarea { font: inherit; }
   align-self: stretch; background: var(--bubble); border-radius: var(--radius-bubble);
   padding: 14px 16px; font: 400 16px/1.4 var(--sans); white-space: pre-wrap; overflow-wrap: anywhere;
 }
-.bubble-user.queued { opacity: .6; }
-.bubble-user .queued-tag { display: block; margin-top: 6px; font: 400 11.5px/1 var(--mono); color: var(--muted); }
+/* Waiting on the agent to take the turn — grey italic, the same shape the CLI uses for a queued
+   line. It settles to normal text when the worker echoes the turn back (model.ts, settleQueued). */
+.bubble-user.queued { color: var(--text-3); font-style: italic; }
 
 /* assistant prose: no avatar, no bubble (0b) */
 .prose { font: 400 17.5px/1.5 var(--serif); color: var(--text); overflow-wrap: anywhere; }
