@@ -8,7 +8,11 @@
     "skipLibCheck": true,
     "noUnusedLocals": false,
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "types": ["node"]
+    "types": ["node", "vite/client"],
+    // The repo writes explicit .ts/.tsx extensions everywhere (Node's type stripping needs
+    // them on the server side, and the web imports shared modules out of ../src).
+    "allowImportingTsExtensions": true,
+    "noEmit": true
   },
-  "include": ["src"]
+  "include": ["src", "../src/tool-summary.ts", "../src/transcript-text.ts", "../src/push-event.ts"]
 }

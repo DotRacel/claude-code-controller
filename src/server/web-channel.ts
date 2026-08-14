@@ -10,7 +10,7 @@ import crypto from 'node:crypto';
 import type { Server, IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import type { Store } from './store.ts';
-import type { ServerEvent, ControllerServer } from './index.ts';
+import type { ServerEvent, ControllerServer, PermissionDecision } from './index.ts';
 import { pushNotificationFrom } from '../push-event.ts';
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
@@ -27,6 +27,28 @@ interface WebSock {
 }
 
 type WebApi = Pick<ControllerServer, 'sendUserMessage' | 'sendControlResponse' | 'sendControl'>;
+
+/** Permission-update shapes the worker offers in `permission_suggestions` (2.1.232). */
+const PERMISSION_UPDATE_TYPES = new Set(['addRules', 'replaceRules', 'removeRules', 'setMode', 'addDirectories', 'removeDirectories']);
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  !!v && typeof v === 'object' && !Array.isArray(v);
+
+/**
+ * Build a permission decision from a browser frame. Everything here is untrusted input, so
+ * only the four keys the worker's own schema accepts survive, and `updatedPermissions` entries
+ * must at least carry a known `type` — a malformed one would make the worker drop the whole
+ * array (and with it a legitimate "Always allow").
+ */
+function decisionFrom(m: any): PermissionDecision {
+  const d: PermissionDecision = { behavior: m?.behavior === 'deny' ? 'deny' : 'allow' };
+  if (isPlainObject(m?.updatedInput)) d.updatedInput = m.updatedInput;
+  if (Array.isArray(m?.updatedPermissions)) {
+    const ups = m.updatedPermissions.filter((u: unknown) => isPlainObject(u) && typeof u.type === 'string' && PERMISSION_UPDATE_TYPES.has(u.type));
+    if (ups.length) d.updatedPermissions = ups;
+  }
+  if (typeof m?.message === 'string' && m.message.trim()) d.message = m.message.slice(0, 2000);
+  return d;
+}
 
 function cookieCredential(req: IncomingMessage): string | undefined {
   const raw = req.headers.cookie;
@@ -106,7 +128,7 @@ export function attachWebChannel(server: Server, api: WebApi, store: Store) {
         if (owns(ws, m.sessionId) && typeof m.text === 'string') api.sendUserMessage(m.sessionId, m.text);
         break;
       case 'permission_response':
-        if (owns(ws, m.sessionId)) api.sendControlResponse(m.sessionId, m.requestId, m.behavior === 'deny' ? 'deny' : 'allow');
+        if (owns(ws, m.sessionId)) api.sendControlResponse(m.sessionId, m.requestId, decisionFrom(m));
         break;
       case 'control':
         if (owns(ws, m.sessionId) && typeof m.subtype === 'string') api.sendControl(m.sessionId, m.subtype, m.extra || {});

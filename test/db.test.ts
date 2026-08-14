@@ -130,6 +130,33 @@ test('last_activity is batched by close(), not written per event', { skip }, asy
   assert.ok(after.getTime() > created.getTime(), 'flush persisted the bump');
 });
 
+test('the session-list digest rides the same batch and survives a restart', { skip }, async () => {
+  const pool = await db();
+  const a = new Store({ pool });
+  const s = await a.createReplSession(CRED, { dir: '/x' });
+  await a.appendEvents(s.id, [
+    { type: 'user', timestamp: '2026-08-14T10:00:00.000Z', message: { role: 'user', content: '修一下登录' } },
+    { type: 'assistant', timestamp: '2026-08-14T10:00:01.000Z', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'npm test' } }] } },
+    { type: 'control_request', request_id: 'r', request: { subtype: 'can_use_tool', tool_name: 'Bash', tool_use_id: 't1' } },
+  ]);
+  a.touch(s.id);
+  assert.equal((await pool.query('select digest from sessions where id = $1', [s.id])).rows[0].digest, null, 'digest is not written per event');
+  await a.close(); // one batched UPDATE with last_activity
+
+  const b = new Store({ pool }); // restart
+  await b.load();
+  const d = b.view(b.getSession(s.id)!).digest;
+  assert.equal(d.prompt, '修一下登录');
+  assert.equal(d.tool, 'Bash');
+  assert.equal(d.toolArg, 'npm test');
+  assert.equal(d.toolCalls, 1);
+  // An in-flight approval dies with the process that held the request — the badge must not
+  // come back stuck on after a restart.
+  assert.equal(d.pendingApproval, false);
+  assert.equal(d.turnActive, false);
+  await b.close();
+});
+
 test('server end-to-end: /rc session + events survive a restart', { skip }, async () => {
   const pool = await db();
   const auth = (t: string) => ({ Authorization: `Bearer ${t}` });

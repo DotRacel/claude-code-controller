@@ -4,33 +4,13 @@
  * Live `user` events are worker echoes of every keyboard turn — web-sent and
  * terminal-typed alike. Web submits are inserted optimistically, so their
  * echo must be dropped; terminal-typed turns must be shown.
+ *
+ * `cleanUserText` / `userTextsFrom` live in src/transcript-text.ts because the server's
+ * session-list digest must hide exactly the same synthetic messages; re-exported here so
+ * the web (and test/transcript.test.ts) keeps one import site.
  */
-
-/** Strip synthetic user-message content official clients hide. null = render nothing. */
-export function cleanUserText(raw: unknown): string | null {
-  if (typeof raw !== 'string') return null;
-  if (/^\s*<(local-command-caveat|command-name|command-message|command-args|command-contents|local-command-stdout|command-stdout|bash-stdout|bash-stderr|bash-input)\b/.test(raw)) return null;
-  const s = raw.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '').trim();
-  return s || null;
-}
-
-export function userTextsFrom(payload: any): string[] {
-  if (!payload || payload.isMeta || payload.isCompactSummary) return [];
-  const content = payload.message?.content;
-  const out: string[] = [];
-  if (typeof content === 'string') {
-    const t = cleanUserText(content);
-    if (t) out.push(t);
-  } else if (Array.isArray(content)) {
-    for (const b of content) {
-      if (b?.type === 'text') {
-        const t = cleanUserText(b.text);
-        if (t) out.push(t);
-      }
-    }
-  }
-  return out;
-}
+export { cleanUserText, userTextsFrom } from '../../src/transcript-text.ts';
+import { userTextsFrom } from '../../src/transcript-text.ts';
 
 /**
  * Decide which user texts to append.

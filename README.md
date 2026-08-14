@@ -126,8 +126,8 @@ Run it:
    Generates/prints/saves a credential if none is given. Interactive by default (see below);
    `--headless` gives the phone-only `claude remote-control` process instead.
 4. On your phone (LAN IP or a tunnel), open the server URL, paste the credential → your
-   session appears → chat, with tool-use permission prompts. Desktop browsers get a
-   "use your phone" guard.
+   session appears → chat, with tool-use permission prompts. On a desktop the same UI renders
+   inside a 390×844 phone frame, so the real thing is reviewable without a device.
 
 - Data-plane is authenticated by the per-session ingress token; `/ws/client` is scoped to the
   credential (a socket only touches its own sessions).
@@ -136,6 +136,119 @@ Run it:
 
 Files: `src/server/main.ts` (process entry), `src/server/web-channel.ts` (browser WS),
 `src/control-cli.ts` (`control-claude-code`), `web/` (Vite + React SPA).
+
+## Mobile UI (sixth version) — DONE, verified
+
+The phone UI is built to the Anthropic Remote Control design spec: warm-dark surface (`#262624`),
+Source Serif 4 for assistant prose, JetBrains Mono for commands and output, 4pt grid, tool cards
+that merge into bordered groups, a permission sheet whose drag-dismiss is a *deny*, and an output
+sheet instead of inline dumps. Fonts are self-hosted (`web/public/fonts`, latin + latin-ext, both
+variable ⇒ 4 files / 140 KB) and precached by the service worker.
+
+**The transcript is a pure reducer.** `web/src/model.ts` folds data-plane payloads into render
+items (`user · prose · thinking · tools · todo · question · bgtask · status · error`) plus a
+`live` block (busy, running tool, thinking tokens, model, permission mode, slash commands). The
+same function eats the history backfill and the live stream, so a reopened session renders
+identically — and it is testable without a browser (`test/model.test.ts`, `npm run render-history`
+replays a real session out of PostgreSQL).
+
+Four things the design doc could not have known, found by reading real captured traffic:
+
+- **`thinking` blocks arrive with `thinking: ""`** — the data plane relays the signature only,
+  never the reasoning text (verified across every block of a real session). So a thinking block is
+  a marker ("思考 · N tokens", token count from `system:thinking_tokens`), not a collapsible
+  transcript. It expands only if a future version starts sending text.
+- **`AskUserQuestion` is not a tool card.** It always arrives as `control_request:can_use_tool`
+  (its `checkPermissions` returns `ask` unconditionally), and is answered with
+  `{behavior:'allow', updatedInput:{questions, answers}}` — answers keyed by question text,
+  multi-select comma-joined. It renders as an inline question card with options, descriptions,
+  previews, a free-text box and Skip. `npm run e2e-question` proves the round trip on a real
+  wire: the phone's answer reaches the tool, the tool_result echoes it, the model acts on it.
+- **`Update Todos` does not exist in 2.1.232** — the todo card is built from `TaskCreate` /
+  `TaskUpdate`, and falls back to a plain tool row when the input cannot be parsed.
+- **The `/rc` bridge does not relay `stream_event`.** The CCR client uploads partial messages as
+  ephemeral events, but a completed interactive turn delivered `user → assistant → result` and
+  nothing else. So prose appears per message, not per token; the reducer handles both (the
+  streamed draft is replaced in place, never appended twice) and the busy state is carried by the
+  activity line instead of a caret.
+
+`permission_response` over `/ws/client` now carries the worker's own contract —
+`{behavior, updatedInput?, updatedPermissions?, message?}` — which is what makes "Always allow"
+work: the phone echoes back a `permission_suggestions` entry rather than inventing a rule (it
+cannot reach the machine's `settings.json`). The browser is untrusted, so `web-channel.ts` filters
+to those four keys and drops permission updates with an unknown `type` — one malformed entry would
+make the worker silently discard the whole array and turn an "always" into a "once".
+
+The session list is backed by a server-derived digest (`store.foldDigest`: last prompt, running
+tool, tool count, needs-approval, model), persisted in a `digest jsonb` column that rides the same
+batched UPDATE as `last_activity`. An in-flight approval is deliberately not restored on boot — the
+request died with the process, so the badge must not come back stuck on.
+
+Deliberately not built, because the architecture has no channel for it: starting a session from the
+phone (only your terminal can launch `control-claude-code`), reading/writing the machine's
+permission allowlist, the `@`-file picker, "open in editor", voice, and image upload. Web Push
+lock-screen approval is deferred — notifications today are local and need the page alive.
+
+Verified by: `npm test` (76 tests, ~4s — reducer invariants against real captured shapes in
+`test/fixtures/transcript-shapes.jsonl`, permission pass-through and digest derivation over a real
+socket, digest persistence across a restart), `npm run e2e-interactive`, `npm run e2e-question`,
+and `cd web && npm run build` (typechecks first).
+
+### Reviewing the phone UI without a phone
+
+```bash
+npm run ui-preview   # :8791 — the real SPA against fake-but-real-shaped sessions
+npm run ui-shot      # headless chromium at 390×844 → artifacts/ui/*.png + layout numbers
+```
+
+`test/ui-preview.ts` replays `test/fixtures/transcript-shapes.jsonl` **through the actual
+data-plane** (`POST …/worker/events`) into three seeded sessions — one live transcript, one waiting
+on approval, one offline — so what the browser renders came out of the same reducer path as a real
+session, with no claude, no inference and no database. `test/ui-shot.ts` drives chromium over CDP
+(no puppeteer), sets a *real* mobile viewport with `Emulation.setDeviceMetricsOverride`
+(`mobile: true`, DPR 3 — a bare `--window-size` leaves `mobile:false`, so `dvh`, safe-area insets
+and touch queries behave like a desktop), and captures nine states: list, transcript top/bottom,
+composing, permission sheet, question card, output sheet, menu, credential gate.
+
+It prints numbers as well as pixels — every box's geometry, each transcript item's height,
+`scrollTop/scrollMax`, and any element painting outside the viewport (ignoring code blocks, the one
+place horizontal scroll is allowed). That is what found the three real bugs, none of which any unit
+test could see:
+
+- **The app shell was not one viewport tall.** `.phone-frame` inherited only `min-height: 100%`
+  from `.desktop-stage` on the mobile branch, and a percentage height resolves to `auto` against an
+  auto-height parent — so the frame grew with the transcript (2732px on an 844px screen), the page
+  itself became the scroller and the composer scrolled off the bottom of the phone.
+- **Every clipped card collapsed to a 2px sliver** once that was fixed. A column flex item's
+  automatic minimum size is its content — *except* with `overflow: hidden`, where it is 0. Tool
+  groups and question cards round their corners, so the moment the transcript overflowed they were
+  shrunk to their borders. `.chat > *, .session-list > * { flex: none }`. (The two bugs masked each
+  other: with no definite height nothing overflowed, so nothing shrank.)
+- **Long unbroken tokens escaped the tool card** — a DSN or URL in a command ran past the right
+  edge and was clipped, because `.tool-head` only broke at spaces.
+
+Two smaller fixes came out of the same pass: the transcript now re-pins when the *composer* grows
+(a `ResizeObserver`, since no new item arrives — typing a three-line message used to hide the
+message you were writing about), and the code-block copy button moved out of the code into its own
+row (floating at the top-right, it covered whatever sat at the right edge of the first line
+whenever the block scrolled sideways).
+
+Note when reading screenshots on a fresh box: with no CJK font installed every Chinese glyph
+renders as tofu. `fc-list :lang=zh` first.
+
+### Icons: the official Claude symbol
+
+`web/public/icons/claude-symbol.svg` is Anthropic's own symbol (via Wikimedia Commons,
+CC0 1.0, sourced from anthropic.com), and it is the single source of truth for the mark —
+`web/scripts/gen-icons.mjs` (`cd web && npm run icons`) parses the `<path>` out of it and renders
+the PWA PNGs with chromium, rather than a hand-rolled rasteriser. Proportions are measured, not
+invented: `claude.ai/apple-touch-icon.png` is a #d97757 ground with a #fefcfb mark spanning
+**74.4%** of the square, so that is what 192 / 512 / 180 / 32 use; the maskable 512 drops to 56% to
+survive Android's circular crop. The same path is a `ClaudeMark` component (`web/src/icons.tsx`)
+used for the launch screen's app icon and the question card, replacing a `✳` glyph on a coral
+rounded square. The service worker cache is bumped (`ccc-web-v4`) so installed copies do not keep
+serving the old ones. It is Anthropic's trademark, used here because this app is a client for
+their product.
 
 ## Interactive `/rc` (fourth version) — DONE, verified
 

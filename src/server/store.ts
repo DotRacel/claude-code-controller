@@ -21,6 +21,8 @@ import type { ServerResponse } from 'node:http';
 import {
   type Pool, upsertEnv, upsertSession, insertEvents, selectHistory, flushActivity, loadRecent,
 } from './db.ts';
+import { userTextsFrom } from '../transcript-text.ts';
+import { toolArg, HIDDEN_TOOLS } from '../tool-summary.ts';
 
 /** Token-level deltas: high write volume, no replay value (the full `assistant` message
  * carries the final text), so they are relayed live but never stored. */
@@ -63,6 +65,43 @@ export interface SessionRecord {
   wsConnected: boolean; // child's SSE data-plane is open
   sseRes: ServerResponse | null; // server → child channel
   seq: number; // client_event sequence_num / id
+  digest: SessionDigest; // derived from the event stream for the session list
+  /** tool_use_ids whose can_use_tool is still unanswered. Runtime only — an in-flight
+   * approval does not survive a restart (the child's request is lost with the process). */
+  pendingTools: Set<string>;
+  /** tool_use_id of the call the digest is currently reporting, so a late result from an
+   * older call cannot overwrite the newer row. Runtime only. */
+  currentToolUseId?: string;
+}
+
+/**
+ * What the session list needs without subscribing to a transcript (design 1a/1h: prompt
+ * preview, the running tool, a needs-approval badge, `Done · N tool calls`, model).
+ * Derived incrementally in appendEvents — the single funnel every inbound payload passes.
+ * Tool names are stored RAW; the web maps them through tool-summary.ts, so presentation
+ * stays on the client.
+ */
+export interface SessionDigest {
+  prompt?: string;        // last visible user prompt
+  tool?: string;          // wire name of the most recent tool call
+  toolArg?: string;       // its headline argument
+  toolStatus?: 'running' | 'ok' | 'error';
+  toolStartedAt?: number; // so the phone can render a live elapsed clock
+  toolCalls: number;
+  pendingApproval: boolean;
+  turnActive: boolean;    // a turn is in flight (user sent, no result yet)
+  model?: string;
+  mode?: string;          // permissionMode
+}
+
+export const emptyDigest = (): SessionDigest => ({ toolCalls: 0, pendingApproval: false, turnActive: false });
+
+/** `assistant` and `user` payloads carry an ISO `timestamp`; nothing else does. */
+export function payloadTime(payload: any): number | undefined {
+  const t = payload?.timestamp;
+  if (typeof t !== 'string') return undefined;
+  const ms = Date.parse(t);
+  return Number.isFinite(ms) ? ms : undefined;
 }
 
 /** Public shape sent to the web (no tokens / internals). */
@@ -75,6 +114,7 @@ export interface SessionView {
   status: 'active' | 'offline';
   createdAt: number;
   lastActivity: number;
+  digest: SessionDigest;
 }
 
 /** Encode a bridge work secret exactly as AVl() in the target expects to decode it. */
@@ -109,7 +149,13 @@ export class Store {
       this.envs.set(e.id, { ...e, online: false, queue: [], inflight: new Map() });
     }
     for (const s of sessions) {
-      this.sessions.set(s.id, { ...s, wsConnected: false, sseRes: null, seq: 0 });
+      const { digest, ...rest } = s;
+      this.sessions.set(s.id, {
+        ...rest, wsConnected: false, sseRes: null, seq: 0,
+        // A restart voids in-flight approvals, so the badge must not come back stuck on.
+        digest: { ...emptyDigest(), ...(digest ?? {}), pendingApproval: false, turnActive: false },
+        pendingTools: new Set(),
+      });
       this.byIngressToken.set(s.ingressToken, s.id);
     }
     return { envs: envs.length, sessions: sessions.length };
@@ -150,6 +196,7 @@ export class Store {
       id: sessionId, credential: env.credential, envId, ingressToken, workId: work.id,
       machineName: env.machineName, dir: env.dir, branch: env.branch, gitRepoUrl: env.gitRepoUrl,
       createdAt: now, lastActivity: now, wsConnected: false, sseRes: null, seq: 0,
+      digest: emptyDigest(), pendingTools: new Set(),
     };
     this.sessions.set(sessionId, session);
     this.byIngressToken.set(ingressToken, sessionId);
@@ -178,6 +225,7 @@ export class Store {
       machineName: meta.machineName ?? meta.title ?? os.hostname(),
       dir: meta.dir,
       createdAt: now, lastActivity: now, wsConnected: false, sseRes: null, seq: 0,
+      digest: emptyDigest(), pendingTools: new Set(),
     };
     this.sessions.set(sid, session);
     this.byIngressToken.set(ingressToken, sid);
@@ -229,7 +277,7 @@ export class Store {
     return [...this.sessions.values()].filter((s) => s.credential === credential).sort((a, b) => b.lastActivity - a.lastActivity);
   }
   view(s: SessionRecord): SessionView {
-    return { id: s.id, machine: s.machineName, dir: s.dir, branch: s.branch, gitRepoUrl: s.gitRepoUrl, status: s.wsConnected ? 'active' : 'offline', createdAt: s.createdAt, lastActivity: s.lastActivity };
+    return { id: s.id, machine: s.machineName, dir: s.dir, branch: s.branch, gitRepoUrl: s.gitRepoUrl, status: s.wsConnected ? 'active' : 'offline', createdAt: s.createdAt, lastActivity: s.lastActivity, digest: s.digest };
   }
 
   touch(sessionId: string): void {
@@ -243,7 +291,8 @@ export class Store {
     if (!this.pool || this.dirtyActivity.size === 0) return;
     const ids = [...this.dirtyActivity];
     this.dirtyActivity.clear();
-    const rows = ids.map((id) => this.sessions.get(id)).filter(Boolean).map((s) => ({ id: s!.id, lastActivity: s!.lastActivity }));
+    // The digest changes on the same events that bump last_activity, so it rides the same batch.
+    const rows = ids.map((id) => this.sessions.get(id)).filter(Boolean).map((s) => ({ id: s!.id, lastActivity: s!.lastActivity, digest: s!.digest }));
     try {
       await flushActivity(this.pool, rows);
     } catch (e: any) {
@@ -259,6 +308,8 @@ export class Store {
    */
   async appendEvents(sessionId: string, payloads: unknown[]): Promise<void> {
     const storable = payloads.filter((p) => !UNSTORED_EVENT_TYPES.has((p as any)?.type));
+    const session = this.sessions.get(sessionId);
+    if (session) for (const p of storable) this.foldDigest(session, p);
     if (!storable.length) return;
     if (!this.pool) {
       let h = this.memHistory.get(sessionId);
@@ -273,6 +324,79 @@ export class Store {
   async historyFor(sessionId: string): Promise<unknown[]> {
     if (!this.pool) return this.memHistory.get(sessionId) ?? [];
     return selectHistory(this.pool, sessionId, HISTORY_LIMIT);
+  }
+
+  /**
+   * Fold one payload into the session-list digest. Deliberately shallow: it answers "what is
+   * this session doing" for a list row, not "what does the transcript look like" (that is the
+   * web's reducer). Unknown types are no-ops so a new event type can never break the list.
+   */
+  private foldDigest(s: SessionRecord, payload: any): void {
+    if (!payload || typeof payload !== 'object') return;
+    const d = s.digest;
+    switch (payload.type) {
+      case 'system': {
+        if (payload.subtype !== 'init') return;
+        if (typeof payload.model === 'string') d.model = payload.model;
+        if (typeof payload.permissionMode === 'string') d.mode = payload.permissionMode;
+        return;
+      }
+      case 'user': {
+        const texts = userTextsFrom(payload);
+        if (texts.length) {
+          d.prompt = texts[texts.length - 1].slice(0, 400);
+          d.turnActive = true;
+        }
+        const content = payload.message?.content;
+        if (!Array.isArray(content)) return;
+        for (const b of content) {
+          if (b?.type !== 'tool_result') continue;
+          if (typeof b.tool_use_id === 'string') s.pendingTools.delete(b.tool_use_id);
+          // Only the newest call drives the row; an older result must not overwrite it.
+          if (b.tool_use_id === s.currentToolUseId) d.toolStatus = b.is_error ? 'error' : 'ok';
+        }
+        d.pendingApproval = s.pendingTools.size > 0;
+        return;
+      }
+      case 'assistant': {
+        const content = payload.message?.content;
+        if (!Array.isArray(content)) return;
+        for (const b of content) {
+          if (b?.type !== 'tool_use' || HIDDEN_TOOLS.has(b.name)) continue;
+          d.toolCalls += 1;
+          d.tool = b.name;
+          d.toolArg = toolArg(b.name, b.input);
+          d.toolStatus = 'running';
+          d.toolStartedAt = payloadTime(payload) ?? Date.now();
+          s.currentToolUseId = typeof b.id === 'string' ? b.id : undefined;
+          d.turnActive = true;
+        }
+        return;
+      }
+      case 'control_request': {
+        if (payload.request?.subtype !== 'can_use_tool') return;
+        const id = payload.request?.tool_use_id;
+        if (typeof id === 'string') s.pendingTools.add(id);
+        d.pendingApproval = true;
+        return;
+      }
+      case 'result': {
+        d.turnActive = false;
+        if (d.toolStatus === 'running') d.toolStatus = payload.is_error ? 'error' : 'ok';
+        s.pendingTools.clear();
+        d.pendingApproval = false;
+        return;
+      }
+    }
+  }
+
+  /** Called when we answer a permission request, so the list badge clears immediately. */
+  clearPendingApproval(sessionId: string, toolUseId?: string): void {
+    const s = this.sessions.get(sessionId);
+    if (!s) return;
+    if (toolUseId) s.pendingTools.delete(toolUseId);
+    else s.pendingTools.clear();
+    s.digest.pendingApproval = s.pendingTools.size > 0;
   }
 
   // ── runtime connection state (memory only) ──

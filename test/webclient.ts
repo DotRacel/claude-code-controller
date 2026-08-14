@@ -32,10 +32,20 @@ console.log(`history backfill: ${history.length} events; text = ${htext.slice(0,
 console.log(`👤 (web) ${TEXT}`);
 ws.send(JSON.stringify({ type: 'user_message', sessionId: sid, text: TEXT }));
 
-const got = await waitFor(() => events.some((p) => p.type === 'result'), 90000);
+// Wait for the REPLY, not merely for a `result`: a turn that was already in flight when we
+// subscribed can land its own result first and end the wait before Claude has said anything.
+const got = await waitFor(() => events.some((p) => p.type === 'assistant' && p.message?.content?.some?.((b: any) => b.type === 'text')), 90000);
 const asst = events.filter((p) => p.type === 'assistant').pop();
 const txt = asst?.message?.content?.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('') ?? '';
 const peer = events.some((p) => { const s = JSON.stringify(p); return s.includes('"peer"') || s.includes('Another Claude'); });
 console.log(`🤖 ${txt.trim().slice(0, 80)}`);
 console.log(`result: ${got ? '✅' : '❌ timeout'}   owner(no-peer): ${peer ? '❌ PEER' : '✅ owner'}`);
+// Which event types the interactive (/rc) data-plane actually delivers. `stream_event` here or
+// not decides whether the phone can render token-by-token or only whole messages.
+const hist: Record<string, number> = {};
+for (const p of events) {
+  const k = p.type === 'system' ? `system:${p.subtype}` : p.type === 'stream_event' ? `stream_event:${p.event?.type ?? '?'}` : p.type;
+  hist[k] = (hist[k] || 0) + 1;
+}
+console.log('event types:', JSON.stringify(hist));
 process.exit(got && !peer ? 0 : 1);

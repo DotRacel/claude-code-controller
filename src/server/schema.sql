@@ -28,6 +28,11 @@ create table if not exists sessions (
   last_activity timestamptz not null default now()
 );
 
+-- Session-list summary (prompt preview / running tool / tool count / model), derived from the
+-- event stream in store.foldDigest and flushed on the same batch as last_activity. Added after
+-- the table existed, hence the separate statement rather than a column in the create above.
+alter table sessions add column if not exists digest jsonb;
+
 create table if not exists events (
   id          bigserial primary key, -- globally monotonic; ordering by it is chronological
   session_id  text not null references sessions(id) on delete cascade,

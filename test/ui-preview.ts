@@ -1,0 +1,139 @@
+/**
+ * ui-preview.ts — serve the real SPA against real-shaped but fake sessions, so the mobile UI can
+ * be reviewed (headless chromium, or a phone on the LAN) without claude, inference or a database.
+ *
+ * Everything goes through the actual data-plane: the fixture payloads are POSTed to
+ * `/v1/code/sessions/{id}/worker/events` exactly as a worker would, so the transcript the browser
+ * renders is produced by the same reducer path as a live session.
+ *
+ * Run: node test/ui-preview.ts [--port 8791] [--credential ui-preview]
+ *      then open http://127.0.0.1:8791 (credential is pre-seeded in the URL: /?cred=ui-preview)
+ */
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createControllerServer, type ControllerServer } from '../src/server/index.ts';
+import { attachWebChannel } from '../src/server/web-channel.ts';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const staticDir = path.resolve(here, '../web/dist');
+const fixture = path.resolve(here, 'fixtures/transcript-shapes.jsonl');
+
+export interface Preview {
+  server: ControllerServer;
+  port: number;
+  credential: string;
+  /** the session that carries the full transcript */
+  chatId: string;
+  close: () => void;
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Fixture transcript, minus the trailing `result` so the turn still looks in flight. */
+function transcript(): any[] {
+  return fs.readFileSync(fixture, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+}
+
+/** Long, wrapping, mixed-script content — the layout only breaks on real text. */
+const EXTRA: any[] = [
+  { type: 'user', timestamp: '2026-08-14T11:20:00.000Z', message: { role: 'user', content: '这个会话页在手机上排版不太对，帮我看看 header、转录区和输入框的高度分配，另外 /home/racel/claude-code-controller/web/src/components/ChatView.tsx 里的滚动容器也检查一下' } },
+  {
+    type: 'assistant', timestamp: '2026-08-14T11:20:03.000Z',
+    message: {
+      role: 'assistant', model: 'claude-opus-5',
+      content: [
+        { type: 'text', text: '我先看一下布局。三层结构是 `.screen`（flex column）→ `.topbar` / `.scroll.chat` / `.composer-wrap`，理论上转录区应该吃掉剩余空间。\n\n几个可能的点：\n\n1. `height: 100%` 在移动端浏览器上会被地址栏影响\n2. `min-height: 0` 缺失会让 flex 子项撑破容器\n3. 安全区 `env(safe-area-inset-*)` 只在 standalone 下有值\n\n```css\n.screen { height: 100%; display: flex; flex-direction: column; }\n.scroll { flex: 1; min-height: 0; overflow-y: auto; }\n```\n\n下面跑一下构建确认。' },
+        { type: 'tool_use', id: 'tu_prev1', name: 'Bash', input: { command: 'cd web && npm run build 2>&1 | tail -20' } },
+      ],
+    },
+  },
+  { type: 'user', timestamp: '2026-08-14T11:20:31.000Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_prev1', content: 'vite v5.4.11 building for production...\n✓ 41 modules transformed.\ndist/index.html                   1.18 kB\ndist/assets/index-C3nQ8f2a.css   14.02 kB\ndist/assets/index-Bq7dK1vX.js   162.44 kB\n✓ built in 1.34s' }] } },
+  {
+    type: 'assistant', timestamp: '2026-08-14T11:20:33.000Z',
+    message: { role: 'assistant', model: 'claude-opus-5', content: [{ type: 'tool_use', id: 'tu_prev2', name: 'Read', input: { file_path: '/home/racel/claude-code-controller/web/src/components/Composer.tsx' } }] },
+  },
+];
+
+/** A pending `can_use_tool`, so the permission sheet can be screenshotted. */
+const PERMISSION: any[] = [
+  {
+    type: 'assistant', timestamp: '2026-08-14T11:21:00.000Z',
+    message: { role: 'assistant', model: 'claude-opus-5', content: [{ type: 'tool_use', id: 'tu_perm', name: 'Bash', input: { command: 'rm -rf web/dist && cd web && npm run build' } }] },
+  },
+  {
+    type: 'control_request', request_id: 'rq_preview',
+    request: {
+      subtype: 'can_use_tool', tool_name: 'Bash', tool_use_id: 'tu_perm',
+      input: { command: 'rm -rf web/dist && cd web && npm run build', description: '重建前端产物' },
+      permission_suggestions: [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm run build:*' }], behavior: 'allow', destination: 'session' }],
+    },
+  },
+];
+
+async function post(server: ControllerServer, token: string, sid: string, payloads: any[]) {
+  await fetch(`${server.baseUrl}/v1/code/sessions/${sid}/worker/events`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ worker_epoch: 1, events: payloads.map((p) => ({ payload: p })) }),
+  });
+  await sleep(30);
+}
+
+export async function startPreview(opts: { port?: number; credential?: string } = {}): Promise<Preview> {
+  const credential = opts.credential ?? 'ui-preview';
+  let web: ReturnType<typeof attachWebChannel> | null = null;
+  const server = await createControllerServer({ port: opts.port ?? 0, staticDir, onEvent: (e) => web?.handleEvent(e) });
+  web = attachWebChannel(server.server, server, server.store);
+  const aborts: AbortController[] = [];
+
+  /** Open the SSE data-plane so the session reads as `active` (a worker would hold this open). */
+  const goLive = async (token: string, sid: string) => {
+    const ac = new AbortController();
+    aborts.push(ac);
+    const sse = await fetch(`${server.baseUrl}/v1/code/sessions/${sid}/worker/events/stream`, { headers: { Authorization: `Bearer ${token}` }, signal: ac.signal });
+    const reader = sse.body!.getReader();
+    void (async () => { for (;;) { const { done } = await reader.read(); if (done) break; } })().catch(() => {});
+    await sleep(30);
+  };
+
+  // 1) the main session: full fixture transcript + a live turn in flight
+  const chat = await server.store.createReplSession(credential, { dir: '/home/racel/claude-code-controller', machineName: 'racel-dev' });
+  await goLive(chat.ingressToken, chat.id);
+  await post(server, chat.ingressToken, chat.id, transcript());
+  await post(server, chat.ingressToken, chat.id, EXTRA);
+
+  // 2) a second session waiting on approval — gives the list its accent badge
+  const perm = await server.store.createReplSession(credential, { dir: '/srv/api-gateway', machineName: 'build-box' });
+  await goLive(perm.ingressToken, perm.id);
+  await post(server, perm.ingressToken, perm.id, [
+    { type: 'system', subtype: 'init', model: 'claude-opus-5', permissionMode: 'default', cwd: '/srv/api-gateway', slash_commands: ['clear', 'compact', 'review'], skills: [] },
+    { type: 'user', timestamp: '2026-08-14T11:21:00.000Z', message: { role: 'user', content: '把 dist 清掉重新构建一次' } },
+    ...PERMISSION,
+  ]);
+
+  // 3) an offline session — the "claude 没有连着" banner and the dimmed list row
+  const cold = await server.store.createReplSession(credential, { dir: '/home/racel/notes', machineName: 'thinkpad' });
+  await post(server, cold.ingressToken, cold.id, [
+    { type: 'user', timestamp: '2026-08-14T09:02:00.000Z', message: { role: 'user', content: '整理一下这周的会议记录' } },
+    { type: 'assistant', timestamp: '2026-08-14T09:02:20.000Z', message: { role: 'assistant', model: 'claude-opus-5', content: [{ type: 'text', text: '整理好了，共 7 条。' }] } },
+    { type: 'result', subtype: 'success', is_error: false },
+  ]);
+
+  return {
+    server, port: server.port, credential, chatId: chat.id,
+    close: () => { for (const a of aborts) a.abort(); server.close(); },
+  };
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const arg = (n: string) => { const i = process.argv.indexOf(n); return i > 0 ? process.argv[i + 1] : undefined; };
+  if (!fs.existsSync(path.join(staticDir, 'index.html'))) {
+    console.error(`web/dist not built — run: cd web && npm run build`);
+    process.exit(1);
+  }
+  const p = await startPreview({ port: Number(arg('--port') || 8791), credential: arg('--credential') });
+  console.log(`ui-preview on http://127.0.0.1:${p.port}  credential=${p.credential}  chat=${p.chatId}`);
+  console.log('sessions: 1 live transcript · 1 awaiting approval · 1 offline');
+  process.on('SIGINT', () => { p.close(); process.exit(0); });
+}

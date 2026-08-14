@@ -24,6 +24,24 @@ export type ServerEvent =
   | { type: 'work.poll'; envId: string; delivered?: string }
   | { type: 'http'; method: string; path: string };
 
+/**
+ * What a bridge client is allowed to answer a `can_use_tool` request with. This is exactly the
+ * schema the 2.1.232 worker validates a bridge permission response against (an empty
+ * `updatedInput` is treated as absent, malformed `updatedPermissions` is dropped with a warn):
+ *
+ *   - `updatedInput`       — edited tool input. AskUserQuestion rides this: the phone puts the
+ *                            chosen answers in `{questions, answers, response?, annotations?}`.
+ *   - `updatedPermissions` — the `permission_suggestions` the worker itself offered, echoed back
+ *                            to make an allow persistent ("Always allow").
+ *   - `message`            — reason shown to the model on a deny.
+ */
+export interface PermissionDecision {
+  behavior: 'allow' | 'deny';
+  updatedInput?: Record<string, unknown>;
+  updatedPermissions?: unknown[];
+  message?: string;
+}
+
 export interface ControllerServer {
   server: http.Server;
   port: number;
@@ -31,7 +49,7 @@ export interface ControllerServer {
   store: Store;
   pushSessionWork: (envId: string, apiBaseUrl?: string) => ReturnType<Store['pushSessionWork']>; // async: writes through to PG
   sendUserMessage: (sessionId: string, text: string) => boolean;
-  sendControlResponse: (sessionId: string, requestId: string, behavior: 'allow' | 'deny') => boolean;
+  sendControlResponse: (sessionId: string, requestId: string, decision: 'allow' | 'deny' | PermissionDecision) => boolean;
   sendControl: (sessionId: string, subtype: string, extra?: Record<string, unknown>) => boolean;
   close: () => void;
 }
@@ -207,8 +225,16 @@ export async function createControllerServer(opts: CreateOpts = {}): Promise<Con
     pushSessionWork: (envId: string, apiBaseUrl?: string) => store.pushSessionWork(envId, apiBaseUrl || `http://127.0.0.1:${(server.address() as any)?.port ?? 0}`),
     sendUserMessage: (sessionId: string, text: string) =>
       store.sendToChild(sessionId, { type: 'user', message: { role: 'user', content: text }, client_platform: 'web_claude_ai' }),
-    sendControlResponse: (sessionId: string, requestId: string, behavior: 'allow' | 'deny') =>
-      store.sendToChild(sessionId, { type: 'control_response', response: { subtype: 'success', request_id: requestId, response: { behavior } } }),
+    sendControlResponse: (sessionId: string, requestId: string, decision: 'allow' | 'deny' | PermissionDecision) => {
+      const d: PermissionDecision = typeof decision === 'string' ? { behavior: decision } : decision;
+      // Only the four keys the worker's schema knows; anything else it would ignore anyway.
+      const response: Record<string, unknown> = { behavior: d.behavior === 'deny' ? 'deny' : 'allow' };
+      if (d.updatedInput && Object.keys(d.updatedInput).length) response.updatedInput = d.updatedInput;
+      if (d.updatedPermissions?.length) response.updatedPermissions = d.updatedPermissions;
+      if (d.message) response.message = d.message;
+      store.clearPendingApproval(sessionId); // the list badge must drop as soon as we answer
+      return store.sendToChild(sessionId, { type: 'control_response', response: { subtype: 'success', request_id: requestId, response } });
+    },
     sendControl: (sessionId: string, subtype: string, extra: Record<string, unknown> = {}) =>
       store.sendToChild(sessionId, { type: 'control_request', request_id: crypto.randomUUID(), request: { subtype, ...extra } }),
   };

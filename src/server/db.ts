@@ -31,6 +31,9 @@ export interface SessionRow extends EnvRow {
   ingressToken: string;
   workId: string;
   lastActivity: number;
+  /** Session-list summary; shape owned by store.ts (SessionDigest). Null on rows written
+   * before the column existed, or before the first event arrived. */
+  digest?: unknown;
 }
 
 const SAFE_IDENT = /^[a-z_][a-z0-9_]*$/;
@@ -84,7 +87,7 @@ export async function loadRecent(pool: Pool, windowDays: number): Promise<{ envs
   );
   const sessions = await pool.query(
     `select id, credential, env_id, ingress_token, work_id, machine_name, dir, branch,
-            git_repo_url, created_at, last_activity
+            git_repo_url, created_at, last_activity, digest
        from sessions where last_activity > now() - $1::interval
        order by last_activity desc`,
     [cutoff],
@@ -99,6 +102,7 @@ export async function loadRecent(pool: Pool, windowDays: number): Promise<{ envs
       workId: r.work_id ?? '', machineName: opt(r.machine_name), dir: opt(r.dir),
       branch: opt(r.branch), gitRepoUrl: opt(r.git_repo_url),
       createdAt: ms(r.created_at), lastActivity: ms(r.last_activity),
+      digest: r.digest ?? undefined,
     })),
   };
 }
@@ -129,14 +133,19 @@ export async function upsertSession(pool: Pool, s: SessionRow): Promise<void> {
   );
 }
 
-/** Batch the `last_activity` bumps that touch() accumulated (one UPDATE, not one per event). */
-export async function flushActivity(pool: Pool, rows: Array<{ id: string; lastActivity: number }>): Promise<void> {
+/**
+ * Batch the `last_activity` bumps that touch() accumulated (one UPDATE, not one per event).
+ * The session digest changes on the same events, so it rides along in the same statement.
+ */
+export async function flushActivity(pool: Pool, rows: Array<{ id: string; lastActivity: number; digest?: unknown }>): Promise<void> {
   if (!rows.length) return;
   await pool.query(
-    `update sessions s set last_activity = to_timestamp(v.ts/1000.0)
-       from (select * from unnest($1::text[], $2::float8[]) as t(id, ts)) v
+    `update sessions s
+        set last_activity = to_timestamp(v.ts/1000.0),
+            digest = coalesce(v.digest::jsonb, s.digest)
+       from (select * from unnest($1::text[], $2::float8[], $3::text[]) as t(id, ts, digest)) v
       where s.id = v.id`,
-    [rows.map((r) => r.id), rows.map((r) => r.lastActivity)],
+    [rows.map((r) => r.id), rows.map((r) => r.lastActivity), rows.map((r) => (r.digest === undefined ? null : JSON.stringify(r.digest)))],
   );
 }
 

@@ -1,0 +1,289 @@
+/**
+ * ui-shot.ts — drive a headless chromium at phone size against `ui-preview` and dump both
+ * screenshots and layout numbers, so the mobile UI can be checked without a device.
+ *
+ * Speaks CDP directly (no puppeteer): chromium is launched with `--remote-debugging-port`, the
+ * page target is picked out of `/json/list`, and `Emulation.setDeviceMetricsOverride` gives it a
+ * real 390×844 mobile viewport (a `--window-size` alone is not the same thing — it leaves
+ * `mobile:false`, so `dvh`, safe-area insets and touch media queries behave like a desktop).
+ *
+ * Run: node test/ui-shot.ts [--out artifacts/ui] [--keep] [--width 390] [--height 844]
+ */
+import { spawn, type ChildProcess } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { startPreview } from './ui-preview.ts';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const arg = (n: string, d?: string) => { const i = process.argv.indexOf(n); return i > 0 ? process.argv[i + 1] : d; };
+const has = (n: string) => process.argv.includes(n);
+
+const OUT = path.resolve(here, '..', arg('--out', 'artifacts/ui')!);
+const WIDTH = Number(arg('--width', '390'));
+const HEIGHT = Number(arg('--height', '844'));
+const BIN = process.env.CHROMIUM_BIN || 'chromium';
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// ── a minimal CDP client ──
+class CDP {
+  private ws!: WebSocket;
+  private id = 0;
+  private waiting = new Map<number, { res: (v: any) => void; rej: (e: Error) => void }>();
+  private listeners = new Map<string, ((p: any) => void)[]>();
+
+  static async connect(url: string): Promise<CDP> {
+    const c = new CDP();
+    c.ws = new WebSocket(url);
+    await new Promise<void>((res, rej) => { c.ws.onopen = () => res(); c.ws.onerror = () => rej(new Error(`cdp connect failed: ${url}`)); });
+    c.ws.onmessage = (e) => {
+      const m = JSON.parse(String(e.data));
+      if (m.id != null) {
+        const w = c.waiting.get(m.id);
+        c.waiting.delete(m.id);
+        if (!w) return;
+        m.error ? w.rej(new Error(`${m.error.message} (${JSON.stringify(m.error.data ?? '')})`)) : w.res(m.result);
+      } else if (m.method) {
+        for (const fn of c.listeners.get(m.method) ?? []) fn(m.params);
+      }
+    };
+    return c;
+  }
+
+  send(method: string, params: Record<string, unknown> = {}): Promise<any> {
+    const id = ++this.id;
+    return new Promise((res, rej) => {
+      this.waiting.set(id, { res, rej });
+      this.ws.send(JSON.stringify({ id, method, params }));
+      setTimeout(() => { if (this.waiting.delete(id)) rej(new Error(`${method} timed out`)); }, 30000);
+    });
+  }
+
+  on(method: string, fn: (p: any) => void) {
+    const l = this.listeners.get(method) ?? [];
+    l.push(fn);
+    this.listeners.set(method, l);
+  }
+
+  /** Resolve on the next occurrence of an event (or reject after `ms`). */
+  once(method: string, ms = 15000): Promise<any> {
+    return new Promise((res, rej) => {
+      const t = setTimeout(() => rej(new Error(`${method} never fired`)), ms);
+      this.on(method, (p) => { clearTimeout(t); res(p); });
+    });
+  }
+
+  async eval<T = any>(expression: string): Promise<T> {
+    const r = await this.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+    if (r.exceptionDetails) throw new Error(`eval: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
+    return r.result.value as T;
+  }
+
+  close() { try { this.ws.close(); } catch {} }
+}
+
+async function launchChromium(userDataDir: string): Promise<{ proc: ChildProcess; wsUrl: string; devtoolsPort: number }> {
+  const proc = spawn(BIN, [
+    '--headless=new',
+    '--remote-debugging-port=0',
+    `--user-data-dir=${userDataDir}`,
+    '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage',
+    '--hide-scrollbars',
+    '--force-color-profile=srgb',
+    '--no-first-run', '--no-default-browser-check',
+    'about:blank',
+  ], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+  const wsUrl = await new Promise<string>((res, rej) => {
+    let buf = '';
+    const t = setTimeout(() => rej(new Error(`chromium did not print a devtools url:\n${buf}`)), 20000);
+    proc.stderr!.on('data', (c) => {
+      buf += c;
+      const m = /DevTools listening on (ws:\/\/\S+)/.exec(buf);
+      if (m) { clearTimeout(t); res(m[1]); }
+    });
+    proc.on('exit', (code) => { clearTimeout(t); rej(new Error(`chromium exited (${code}):\n${buf}`)); });
+  });
+  return { proc, wsUrl, devtoolsPort: Number(new URL(wsUrl).port) };
+}
+
+/** The layout facts worth asserting on a phone, measured in the page. */
+const PROBE = `(() => {
+  const box = (sel) => { const e = document.querySelector(sel); if (!e) return null;
+    const r = e.getBoundingClientRect();
+    return { sel, top: +r.top.toFixed(1), bottom: +r.bottom.toFixed(1), left: +r.left.toFixed(1), right: +r.right.toFixed(1),
+             w: +r.width.toFixed(1), h: +r.height.toFixed(1),
+             scrollH: e.scrollHeight, clientH: e.clientHeight, scrollW: e.scrollWidth, clientW: e.clientWidth }; };
+  const vw = window.innerWidth, vh = window.innerHeight;
+  // anything painting wider than the viewport, or below its bottom edge
+  // …ignoring anything inside a deliberate horizontal scroller (code blocks, 0a) and the
+  // visually-hidden live region.
+  const inScroller = (e) => { for (let n = e.parentElement; n; n = n.parentElement) {
+    if (n.scrollWidth > n.clientWidth + 1 && getComputedStyle(n).overflowX !== 'visible') return true; } return false; };
+  const overflow = [];
+  for (const e of document.querySelectorAll('body *')) {
+    const r = e.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) continue;
+    if (e.closest('.sr-only') || inScroller(e)) continue;
+    if (r.right > vw + 0.5 || r.left < -0.5) overflow.push({ tag: e.tagName.toLowerCase(), cls: e.className && String(e.className).slice(0, 40), left: +r.left.toFixed(1), right: +r.right.toFixed(1) });
+  }
+  // every transcript item, so a card that renders as a 2px sliver is visible in the numbers
+  const items = [...document.querySelectorAll('.chat > *')].map((e) => {
+    const r = e.getBoundingClientRect();
+    return String(e.className).trim().split(/\\s+/)[0] + '(' + Math.round(r.height) + ')';
+  });
+  const scroller = document.querySelector('.scroll');
+  return {
+    vw, vh, dpr: devicePixelRatio, items,
+    scrollTop: scroller ? Math.round(scroller.scrollTop) : null,
+    scrollMax: scroller ? Math.round(scroller.scrollHeight - scroller.clientHeight) : null,
+    docScrollH: document.documentElement.scrollHeight, docScrollW: document.documentElement.scrollWidth,
+    bodyScrollH: document.body.scrollHeight,
+    boxes: ['.phone-frame', '.screen', '.topbar', '.topbar-lg', '.banner', '.scroll', '.chat', '.composer-wrap', '.composer', '.session-list', '.sheet']
+      .map(box).filter(Boolean),
+    overflow: overflow.slice(0, 12),
+  };
+})()`;
+
+interface Shot { name: string; setup?: (cdp: CDP) => Promise<void>; noCredential?: boolean; }
+
+async function main() {
+  fs.mkdirSync(OUT, { recursive: true });
+  const preview = await startPreview({ port: 0, credential: 'ui-shot' });
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccc-shot-'));
+  const { proc, devtoolsPort } = await launchChromium(userDataDir);
+
+  const targets = await (await fetch(`http://127.0.0.1:${devtoolsPort}/json/list`)).json();
+  const page = targets.find((t: any) => t.type === 'page');
+  if (!page) throw new Error('no page target');
+  const cdp = await CDP.connect(page.webSocketDebuggerUrl);
+
+  await cdp.send('Page.enable');
+  await cdp.send('Runtime.enable');
+  await cdp.send('Network.enable');
+  await cdp.send('Log.enable');
+  const consoleErrors: string[] = [];
+  cdp.on('Log.entryAdded', (p) => { if (p.entry.level === 'error') consoleErrors.push(p.entry.text); });
+  cdp.on('Runtime.consoleAPICalled', (p) => { if (p.type === 'error') consoleErrors.push(p.args.map((a: any) => a.value ?? a.description).join(' ')); });
+
+  // A real phone viewport: mobile:true is what makes dvh/safe-area/touch behave like a device.
+  await cdp.send('Emulation.setDeviceMetricsOverride', {
+    width: WIDTH, height: HEIGHT, deviceScaleFactor: 3, mobile: true,
+    screenWidth: WIDTH, screenHeight: HEIGHT,
+  });
+  await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+  await cdp.send('Emulation.setUserAgentOverride', {
+    userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
+  });
+
+  const base = `http://127.0.0.1:${preview.port}`;
+  const shots: Shot[] = [
+    { name: '01-session-list' },
+    {
+      name: '02-chat-top',
+      setup: async (c) => {
+        await c.eval(`(() => { const b = [...document.querySelectorAll('.session-card')].find(e => e.textContent.includes('racel-dev')); b && b.click(); })()`);
+        await sleep(900);
+        await c.eval(`document.querySelector('.scroll.chat').scrollTop = 0`);
+        await sleep(200);
+      },
+    },
+    {
+      name: '03-chat-bottom',
+      setup: async (c) => {
+        await c.eval(`(() => { const b = [...document.querySelectorAll('.session-card')].find(e => e.textContent.includes('racel-dev')); b && b.click(); })()`);
+        await sleep(900);
+        await c.eval(`(() => { const s = document.querySelector('.scroll.chat'); s.scrollTop = s.scrollHeight; })()`);
+        await sleep(200);
+      },
+    },
+    {
+      name: '04-chat-composing',
+      setup: async (c) => {
+        await c.eval(`(() => { const b = [...document.querySelectorAll('.session-card')].find(e => e.textContent.includes('racel-dev')); b && b.click(); })()`);
+        await sleep(900);
+        await c.eval(`(() => {
+          const t = document.querySelector('.composer-input');
+          const set = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+          set.call(t, '把会话页的布局问题修一下，尤其是转录区和输入框的高度分配，还有安全区\\n第二行\\n第三行');
+          t.dispatchEvent(new Event('input', { bubbles: true }));
+          t.focus();
+        })()`);
+        await sleep(400);
+      },
+    },
+    {
+      name: '05-permission-sheet',
+      setup: async (c) => {
+        await c.eval(`(() => { const b = [...document.querySelectorAll('.session-card')].find(e => e.textContent.includes('build-box')); b && b.click(); })()`);
+        await sleep(1200);
+      },
+    },
+    {
+      name: '06-question-card',
+      setup: async (c) => {
+        await c.eval(`(() => { const b = [...document.querySelectorAll('.session-card')].find(e => e.textContent.includes('racel-dev')); b && b.click(); })()`);
+        await sleep(900);
+        await c.eval(`document.querySelector('.qcard').scrollIntoView({ block: 'start' })`);
+        await sleep(300);
+      },
+    },
+    {
+      name: '07-output-sheet',
+      setup: async (c) => {
+        await c.eval(`(() => { const b = [...document.querySelectorAll('.session-card')].find(e => e.textContent.includes('racel-dev')); b && b.click(); })()`);
+        await sleep(900);
+        // ToolRow opens on mousedown/mouseup (it shares the code path with a touch long-press),
+        // so a bare .click() does nothing.
+        await c.eval(`(() => {
+          const r = document.querySelectorAll('.tool-row:not([disabled])')[1];
+          r.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+          r.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+        })()`);
+        await sleep(500);
+      },
+    },
+    {
+      name: '08-menu-sheet',
+      setup: async (c) => {
+        await c.eval(`(() => { const b = [...document.querySelectorAll('.session-card')].find(e => e.textContent.includes('racel-dev')); b && b.click(); })()`);
+        await sleep(900);
+        await c.eval(`document.querySelector('[aria-label="更多"]').click()`);
+        await sleep(500);
+      },
+    },
+    { name: '09-credential-gate', noCredential: true },
+  ];
+
+  const report: any[] = [];
+  for (const s of shots) {
+    // Per shot, so clearing it for the gate cannot leak into a later one.
+    if (s.noCredential) await cdp.send('Network.deleteCookies', { name: 'ccc_credential', url: base });
+    else await cdp.send('Network.setCookie', { name: 'ccc_credential', value: preview.credential, url: base, path: '/' });
+    await cdp.send('Page.navigate', { url: base + '/' });
+    await cdp.once('Page.loadEventFired');
+    await sleep(700); // websocket connect + first `sessions` frame
+    if (s.setup) await s.setup(cdp);
+    const probe = await cdp.eval(PROBE);
+    const png = await cdp.send('Page.captureScreenshot', { format: 'png' });
+    fs.writeFileSync(path.join(OUT, `${s.name}.png`), Buffer.from(png.data, 'base64'));
+    report.push({ shot: s.name, ...probe });
+    console.log(`\n── ${s.name} ──`);
+    console.log(`viewport ${probe.vw}×${probe.vh}  doc ${probe.docScrollW}×${probe.docScrollH}  scrollTop ${probe.scrollTop}/${probe.scrollMax}`);
+    if (probe.items?.length) console.log(`  items: ${probe.items.join(' ')}`);
+    for (const b of probe.boxes) console.log(`  ${b.sel.padEnd(15)} y ${String(b.top).padStart(7)} → ${String(b.bottom).padStart(7)}  h ${String(b.h).padStart(7)}  x ${b.left}→${b.right}  scroll ${b.scrollW}×${b.scrollH} / client ${b.clientW}×${b.clientH}`);
+    if (probe.overflow.length) console.log(`  ⚠ horizontal overflow:`, JSON.stringify(probe.overflow));
+  }
+
+  fs.writeFileSync(path.join(OUT, 'report.json'), JSON.stringify(report, null, 2));
+  if (consoleErrors.length) console.log(`\n⚠ console errors:\n  ${consoleErrors.slice(0, 8).join('\n  ')}`);
+  console.log(`\nwrote ${shots.length} screenshots to ${OUT}`);
+
+  cdp.close();
+  if (!has('--keep')) { proc.kill('SIGKILL'); fs.rmSync(userDataDir, { recursive: true, force: true }); }
+  preview.close();
+  process.exit(0);
+}
+
+main().catch((e) => { console.error(e); process.exit(1); });

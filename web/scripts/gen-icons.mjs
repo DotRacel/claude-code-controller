@@ -1,86 +1,74 @@
 /**
- * Write the PWA PNG icons (no extra deps — zlib CRC + deflate).
- * Run: node web/scripts/gen-icons.mjs
+ * Compose the PWA PNG icons from the official Claude symbol (public/icons/claude-symbol.svg).
+ *
+ * Proportions are not invented: they are measured off Anthropic's own app icon
+ * (claude.ai/apple-touch-icon.png) — coral ground #d97757, mark #fefcfb, mark occupying 74.4%
+ * of the square, centred. The maskable variant is the only one that deviates, shrinking the
+ * mark to 56% so it survives Android's circular crop (the safe zone is the central 80%).
+ *
+ * Rasterising is done by the chromium already used for test/ui-shot.ts rather than by a
+ * bespoke rasteriser: an SVG path is the source of truth, so it has to be rendered by
+ * something that actually implements SVG.
+ *
+ * Run: node web/scripts/gen-icons.mjs      (CHROMIUM_BIN to override the browser)
  */
-import { deflateSync, crc32 } from 'node:zlib';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const OUT = join(dirname(fileURLToPath(import.meta.url)), '../public/icons');
+const ICONS = join(dirname(fileURLToPath(import.meta.url)), '../public/icons');
+const BIN = process.env.CHROMIUM_BIN || 'chromium';
 
-function chunk(type, data) {
-  const t = Buffer.from(type);
-  const len = Buffer.alloc(4);
-  len.writeUInt32BE(data.length);
-  const crc = Buffer.alloc(4);
-  crc.writeUInt32BE(crc32(Buffer.concat([t, data])));
-  return Buffer.concat([len, t, data, crc]);
+const GROUND = '#d97757'; // the symbol's own hsl(14.8, 63.1%, 59.6%)
+const MARK = '#fefcfb';
+const INSET = 74.4; // % of the square the mark spans, per the official app icon
+const MASKABLE_INSET = 56;
+
+/** The `<path>` out of the committed official symbol — never a second copy of the geometry. */
+function symbolPath() {
+  const svg = readFileSync(join(ICONS, 'claude-symbol.svg'), 'utf8');
+  const d = /<path[^>]*\sd="([^"]+)"/.exec(svg);
+  if (!d) throw new Error('no <path d="…"> in claude-symbol.svg');
+  return d[1];
 }
 
-function writePng(file, w, h, rgba) {
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(w, 0);
-  ihdr.writeUInt32BE(h, 4);
-  ihdr[8] = 8;
-  ihdr[9] = 6;
-  const rows = [];
-  for (let y = 0; y < h; y++) {
-    rows.push(Buffer.from([0]));
-    rows.push(rgba.subarray(y * w * 4, (y + 1) * w * 4));
+const page = (path, span) => `<!doctype html><html><head><meta charset="utf-8"><style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: ${GROUND}; overflow: hidden; }
+  svg { position: absolute; left: ${(100 - span) / 2}%; top: ${(100 - span) / 2}%; width: ${span}%; height: ${span}%; fill: ${MARK}; }
+</style></head><body>
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><path d="${path}"/></svg>
+</body></html>`;
+
+const TARGETS = [
+  { file: 'icon-192.png', size: 192, span: INSET },
+  { file: 'icon-512.png', size: 512, span: INSET },
+  { file: 'icon-512-maskable.png', size: 512, span: MASKABLE_INSET },
+  { file: 'apple-touch-icon.png', size: 180, span: INSET },
+  { file: 'favicon-32.png', size: 32, span: INSET },
+];
+
+const path = symbolPath();
+mkdirSync(ICONS, { recursive: true });
+const work = mkdtempSync(join(tmpdir(), 'ccc-icons-'));
+try {
+  for (const t of TARGETS) {
+    const html = join(work, `${t.file}.html`);
+    writeFileSync(html, page(path, t.span));
+    const out = join(ICONS, t.file);
+    execFileSync(BIN, [
+      '--headless', '--disable-gpu', '--no-sandbox', '--hide-scrollbars',
+      '--no-first-run', '--no-default-browser-check',
+      `--user-data-dir=${join(work, 'profile')}`,
+      '--force-device-scale-factor=1',
+      `--window-size=${t.size},${t.size}`,
+      `--screenshot=${out}`,
+      `file://${html}`,
+    ], { stdio: ['ignore', 'ignore', 'pipe'] });
+    console.log(`${t.file.padEnd(24)} ${t.size}×${t.size}  mark ${t.span}%  ${statSync(out).size} B`);
   }
-  const png = Buffer.concat([
-    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
-    chunk('IHDR', ihdr),
-    chunk('IDAT', deflateSync(Buffer.concat(rows), { level: 9 })),
-    chunk('IEND', Buffer.alloc(0)),
-  ]);
-  writeFileSync(file, png);
+} finally {
+  rmSync(work, { recursive: true, force: true });
 }
-
-function sdRoundBox(px, py, cx, cy, hw, hh, rad) {
-  const dx = Math.abs(px - cx) - (hw - rad);
-  const dy = Math.abs(py - cy) - (hh - rad);
-  const ax = Math.max(dx, 0);
-  const ay = Math.max(dy, 0);
-  return Math.hypot(ax, ay) + Math.min(Math.max(dx, dy), 0) - rad;
-}
-
-function paint(size, { padFrac, bg }) {
-  const rgba = Buffer.alloc(size * size * 4);
-  const pad = size * padFrac;
-  const inner = size - pad * 2;
-  const cx = size / 2;
-  const cy = size / 2;
-  const hw = inner / 2;
-  const hh = inner / 2;
-  const rad = inner * 0.22;
-  const c0 = [0xc9, 0x64, 0x42];
-  const c1 = [0x2a, 0x6b, 0x5f];
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const i = (y * size + x) * 4;
-      const t = (x + y) / (2 * (size - 1));
-      const sd = sdRoundBox(x + 0.5, y + 0.5, cx, cy, hw, hh, rad);
-      const a = Math.max(0, Math.min(1, 0.5 - sd));
-      const r = c0[0] + (c1[0] - c0[0]) * t;
-      const g = c0[1] + (c1[1] - c0[1]) * t;
-      const b = c0[2] + (c1[2] - c0[2]) * t;
-      // composite over bg
-      rgba[i] = Math.round(r * a + bg[0] * (1 - a));
-      rgba[i + 1] = Math.round(g * a + bg[1] * (1 - a));
-      rgba[i + 2] = Math.round(b * a + bg[2] * (1 - a));
-      rgba[i + 3] = 255;
-    }
-  }
-  return rgba;
-}
-
-mkdirSync(OUT, { recursive: true });
-const dark = [0x0f, 0x0f, 0x0f];
-writePng(join(OUT, 'icon-192.png'), 192, 192, paint(192, { padFrac: 0.06, bg: dark }));
-writePng(join(OUT, 'icon-512.png'), 512, 512, paint(512, { padFrac: 0.06, bg: dark }));
-writePng(join(OUT, 'icon-512-maskable.png'), 512, 512, paint(512, { padFrac: 0.18, bg: dark }));
-writePng(join(OUT, 'apple-touch-icon.png'), 180, 180, paint(180, { padFrac: 0.0, bg: dark }));
-writePng(join(OUT, 'favicon-32.png'), 32, 32, paint(32, { padFrac: 0.06, bg: dark }));
-console.log('wrote icons to', OUT);
+console.log('wrote icons to', ICONS);

@@ -1,14 +1,22 @@
 /* Claude Remote shell worker. Never intercepts /v1 or /ws. */
-const CACHE = 'ccc-web-v2';
+// v4: the icons became the official Claude mark — a stale cache would keep serving the old ones.
+const CACHE = 'ccc-web-v4';
 const PRECACHE = [
   './',
   './index.html',
   './manifest.webmanifest',
+  // Self-hosted webfonts: precached so an offline launch still gets the real type.
+  // Both are variable fonts — one file per subset covers weight 400 and 600.
+  './fonts/source-serif-4-latin.woff2',
+  './fonts/source-serif-4-latin-ext.woff2',
+  './fonts/jetbrains-mono-latin.woff2',
+  './fonts/jetbrains-mono-latin-ext.woff2',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/icon-512-maskable.png',
   './icons/apple-touch-icon.png',
   './icons/favicon-32.png',
+  './icons/claude-symbol.svg',
 ];
 
 self.addEventListener('install', (event) => {
