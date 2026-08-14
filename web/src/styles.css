@@ -83,6 +83,19 @@ html, body { height: 100%; margin: 0; overflow: hidden; }
 @supports not (height: 100dvh) {
   #root { bottom: 0; height: auto; }
 }
+/* …and in an installed app, `lvh`. Measured on the device (client hello): the window reports
+   430×873 on a 932pt screen while the insets are a correct 59/34 — i.e. innerHeight, and with it
+   dvh, is short by the height of a Safari toolbar that is not even on screen. It is the iOS 26
+   viewport miscalculation ("as if Safari's toolbar were still present although it's hidden"), and
+   it is why the shell stopped at 873 and left the canvas showing beneath it. `lvh` is the viewport
+   with retractable UI retracted — which in standalone is simply the real one, since there is no
+   browser chrome to retract. Scoped to standalone deliberately: in a browser TAB lvh is the
+   URL-bar-collapsed height, taller than what you can see, and would push the composer off. */
+@media (display-mode: standalone) {
+  @supports (height: 100lvh) {
+    #root { height: 100lvh; }
+  }
+}
 body {
   background: var(--surface);
   color: var(--text);

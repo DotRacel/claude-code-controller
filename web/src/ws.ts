@@ -63,10 +63,22 @@ function clientInfo(): string {
       d.remove();
       return parseFloat(v) || 0;
     };
+    // Which viewport unit tells the truth is the entire question on iOS 26, so report all four
+    // next to the physical screen height.
+    const unit = (u: string) => {
+      const d = document.createElement('div');
+      d.style.cssText = `position:fixed;top:0;left:0;width:0;height:100${u}`;
+      document.body.appendChild(d);
+      const h = Math.round(d.getBoundingClientRect().height);
+      d.remove();
+      return h;
+    };
     const comp = document.querySelector('.composer')?.getBoundingClientRect();
-    return `build=${build} mode=${mode} win=${innerWidth}x${innerHeight} shell=${r ? `${Math.round(r.top)}→${Math.round(r.bottom)}` : '?'} icb=${icb}`
+    return `build=${build} mode=${mode} win=${innerWidth}x${innerHeight} screen=${screen.width}x${screen.height}`
+      + ` shell=${r ? `${Math.round(r.top)}→${Math.round(r.bottom)}` : '?'} icb=${icb}`
+      + ` vh/dvh/svh/lvh=${unit('vh')}/${unit('dvh')}/${unit('svh')}/${unit('lvh')}`
       + ` insets=${inset('top')}/${inset('bottom')}`
-      + (comp ? ` composerBottom=${Math.round(comp.bottom)} gap=${Math.round(innerHeight - comp.bottom)}` : '');
+      + (comp ? ` gap=${Math.round(screen.height - comp.bottom)}` : '');
   } catch {
     return 'info-failed';
   }
