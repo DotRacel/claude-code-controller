@@ -65,7 +65,7 @@ export function Composer({ busy, offline, slashCommands, skills, onSend, onStop,
             ref={ref}
             className="composer-input"
             rows={1}
-            placeholder={offline ? '离线 — 重连后可继续' : busy ? '补充说明…（会排队）' : '给 Claude 发消息…'}
+            placeholder={offline ? '离线 — 重连后可继续' : busy ? '补充说明…' : '给 Claude 发消息…'}
             value={text}
             disabled={offline}
             onFocus={() => setFocus(true)}

@@ -21,10 +21,31 @@ const arg = (n: string, d?: string) => { const i = process.argv.indexOf(n); retu
 const has = (n: string) => process.argv.includes(n);
 
 const OUT = path.resolve(here, '..', arg('--out', 'artifacts/ui')!);
-const WIDTH = Number(arg('--width', '390'));
-const HEIGHT = Number(arg('--height', '844'));
 const BIN = process.env.CHROMIUM_BIN || 'chromium';
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Two targets, because the bugs differ between them. `phone` is a plain browser tab; `pro-max-pwa`
+ * is the installed web app on an iPhone 15 Pro Max — 430×932, and crucially a real top inset
+ * (59pt of Dynamic Island) and bottom inset (34pt of home indicator) plus
+ * `display-mode: standalone`, none of which a bare --window-size gives you.
+ */
+interface Device {
+  name: string;
+  width: number;
+  height: number;
+  dpr: number;
+  insets?: { top: number; bottom: number; left: number; right: number };
+  standalone?: boolean;
+}
+const DEVICES: Device[] = [
+  { name: 'phone', width: 390, height: 844, dpr: 3 },
+  {
+    name: 'pro-max-pwa', width: 430, height: 932, dpr: 3,
+    insets: { top: 59, bottom: 34, left: 0, right: 0 },
+    standalone: true,
+  },
+];
 
 // ── a minimal CDP client ──
 class CDP {
@@ -83,7 +104,13 @@ class CDP {
   close() { try { this.ws.close(); } catch {} }
 }
 
-async function launchChromium(userDataDir: string): Promise<{ proc: ChildProcess; wsUrl: string; devtoolsPort: number }> {
+/**
+ * `--app=<url>` is the only way to get `display-mode: standalone` to actually match: chromium
+ * accepts `Emulation.setEmulatedMedia` with a `display-mode` feature and then ignores it
+ * (verified — the query still reports `browser`). So an installed-web-app run needs its own
+ * browser process, launched in app mode.
+ */
+async function launchChromium(userDataDir: string, appUrl?: string): Promise<{ proc: ChildProcess; wsUrl: string; devtoolsPort: number }> {
   const proc = spawn(BIN, [
     '--headless=new',
     '--remote-debugging-port=0',
@@ -92,7 +119,7 @@ async function launchChromium(userDataDir: string): Promise<{ proc: ChildProcess
     '--hide-scrollbars',
     '--force-color-profile=srgb',
     '--no-first-run', '--no-default-browser-check',
-    'about:blank',
+    appUrl ? `--app=${appUrl}` : 'about:blank',
   ], { stdio: ['ignore', 'pipe', 'pipe'] });
 
   const wsUrl = await new Promise<string>((res, rej) => {
@@ -134,8 +161,12 @@ const PROBE = `(() => {
     return String(e.className).trim().split(/\\s+/)[0] + '(' + Math.round(r.height) + ')';
   });
   const scroller = document.querySelector('.scroll');
+  // What the safe-area insets actually resolved to, where they matter.
+  const padOf = (sel, side) => { const e = document.querySelector(sel); return e ? getComputedStyle(e)['padding' + side] : null; };
   return {
     vw, vh, dpr: devicePixelRatio, items,
+    standalone: matchMedia('(display-mode: standalone)').matches,
+    pads: { topbar: padOf('.topbar', 'Top') ?? padOf('.topbar-lg', 'Top'), composer: padOf('.composer-wrap', 'Bottom'), sheet: padOf('.sheet', 'Bottom') },
     scrollTop: scroller ? Math.round(scroller.scrollTop) : null,
     scrollMax: scroller ? Math.round(scroller.scrollHeight - scroller.clientHeight) : null,
     docScrollH: document.documentElement.scrollHeight, docScrollW: document.documentElement.scrollWidth,
@@ -151,33 +182,9 @@ interface Shot { name: string; setup?: (cdp: CDP) => Promise<void>; noCredential
 async function main() {
   fs.mkdirSync(OUT, { recursive: true });
   const preview = await startPreview({ port: 0, credential: 'ui-shot' });
-  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccc-shot-'));
-  const { proc, devtoolsPort } = await launchChromium(userDataDir);
-
-  const targets = await (await fetch(`http://127.0.0.1:${devtoolsPort}/json/list`)).json();
-  const page = targets.find((t: any) => t.type === 'page');
-  if (!page) throw new Error('no page target');
-  const cdp = await CDP.connect(page.webSocketDebuggerUrl);
-
-  await cdp.send('Page.enable');
-  await cdp.send('Runtime.enable');
-  await cdp.send('Network.enable');
-  await cdp.send('Log.enable');
-  const consoleErrors: string[] = [];
-  cdp.on('Log.entryAdded', (p) => { if (p.entry.level === 'error') consoleErrors.push(p.entry.text); });
-  cdp.on('Runtime.consoleAPICalled', (p) => { if (p.type === 'error') consoleErrors.push(p.args.map((a: any) => a.value ?? a.description).join(' ')); });
-
-  // A real phone viewport: mobile:true is what makes dvh/safe-area/touch behave like a device.
-  await cdp.send('Emulation.setDeviceMetricsOverride', {
-    width: WIDTH, height: HEIGHT, deviceScaleFactor: 3, mobile: true,
-    screenWidth: WIDTH, screenHeight: HEIGHT,
-  });
-  await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
-  await cdp.send('Emulation.setUserAgentOverride', {
-    userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
-  });
-
   const base = `http://127.0.0.1:${preview.port}`;
+  const consoleErrors: string[] = [];
+
   const shots: Shot[] = [
     { name: '01-session-list' },
     {
@@ -256,32 +263,79 @@ async function main() {
     { name: '09-credential-gate', noCredential: true },
   ];
 
+  const only = arg('--device');
+  const devices = only ? DEVICES.filter((d) => d.name === only) : DEVICES;
+  if (!devices.length) throw new Error(`unknown --device; try: ${DEVICES.map((d) => d.name).join(', ')}`);
+
   const report: any[] = [];
-  for (const s of shots) {
-    // Per shot, so clearing it for the gate cannot leak into a later one.
-    if (s.noCredential) await cdp.send('Network.deleteCookies', { name: 'ccc_credential', url: base });
-    else await cdp.send('Network.setCookie', { name: 'ccc_credential', value: preview.credential, url: base, path: '/' });
-    await cdp.send('Page.navigate', { url: base + '/' });
-    await cdp.once('Page.loadEventFired');
-    await sleep(700); // websocket connect + first `sessions` frame
-    if (s.setup) await s.setup(cdp);
-    const probe = await cdp.eval(PROBE);
-    const png = await cdp.send('Page.captureScreenshot', { format: 'png' });
-    fs.writeFileSync(path.join(OUT, `${s.name}.png`), Buffer.from(png.data, 'base64'));
-    report.push({ shot: s.name, ...probe });
-    console.log(`\n── ${s.name} ──`);
-    console.log(`viewport ${probe.vw}×${probe.vh}  doc ${probe.docScrollW}×${probe.docScrollH}  scrollTop ${probe.scrollTop}/${probe.scrollMax}`);
-    if (probe.items?.length) console.log(`  items: ${probe.items.join(' ')}`);
-    for (const b of probe.boxes) console.log(`  ${b.sel.padEnd(15)} y ${String(b.top).padStart(7)} → ${String(b.bottom).padStart(7)}  h ${String(b.h).padStart(7)}  x ${b.left}→${b.right}  scroll ${b.scrollW}×${b.scrollH} / client ${b.clientW}×${b.clientH}`);
-    if (probe.overflow.length) console.log(`  ⚠ horizontal overflow:`, JSON.stringify(probe.overflow));
+  let written = 0;
+  for (const d of devices) {
+    const dir = path.join(OUT, d.name);
+    fs.mkdirSync(dir, { recursive: true });
+
+    // One browser per device: standalone needs --app, and it is set at launch.
+    const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccc-shot-'));
+    const { proc, devtoolsPort } = await launchChromium(userDataDir, d.standalone ? base : undefined);
+    const targets = await (await fetch(`http://127.0.0.1:${devtoolsPort}/json/list`)).json();
+    const page = targets.find((t: any) => t.type === 'page');
+    if (!page) throw new Error('no page target');
+    const cdp = await CDP.connect(page.webSocketDebuggerUrl);
+    await cdp.send('Page.enable');
+    await cdp.send('Runtime.enable');
+    await cdp.send('Network.enable');
+    await cdp.send('Log.enable');
+    cdp.on('Log.entryAdded', (p) => { if (p.entry.level === 'error') consoleErrors.push(`[${d.name}] ${p.entry.text}`); });
+    cdp.on('Runtime.consoleAPICalled', (p) => { if (p.type === 'error') consoleErrors.push(`[${d.name}] ${p.args.map((a: any) => a.value ?? a.description).join(' ')}`); });
+    await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+    await cdp.send('Emulation.setUserAgentOverride', {
+      userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1',
+    });
+    // mobile:true is what makes dvh/safe-area/touch behave like a device, not a small window.
+    await cdp.send('Emulation.setDeviceMetricsOverride', {
+      width: d.width, height: d.height, deviceScaleFactor: d.dpr, mobile: true,
+      screenWidth: d.width, screenHeight: d.height,
+    });
+    await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: d.insets ?? {} });
+
+    const insets = d.insets ? `insets ${d.insets.top}/${d.insets.bottom}` : 'no insets';
+    console.log(`\n╔═ ${d.name} — ${d.width}×${d.height} @${d.dpr}x, ${d.standalone ? 'standalone (--app)' : 'browser tab'}, ${insets}`);
+
+    for (const s of shots) {
+      // Per shot, so clearing it for the gate cannot leak into a later one.
+      if (s.noCredential) await cdp.send('Network.deleteCookies', { name: 'ccc_credential', url: base });
+      else await cdp.send('Network.setCookie', { name: 'ccc_credential', value: preview.credential, url: base, path: '/' });
+      await cdp.send('Page.navigate', { url: base + '/' });
+      await cdp.once('Page.loadEventFired');
+      await sleep(700); // websocket connect + first `sessions` frame
+      if (s.setup) await s.setup(cdp);
+      const probe = await cdp.eval(PROBE);
+      const png = await cdp.send('Page.captureScreenshot', { format: 'png' });
+      fs.writeFileSync(path.join(dir, `${s.name}.png`), Buffer.from(png.data, 'base64'));
+      written++;
+      report.push({ device: d.name, shot: s.name, ...probe });
+      console.log(`\n── ${d.name} / ${s.name} ──`);
+      console.log(`viewport ${probe.vw}×${probe.vh}  doc ${probe.docScrollW}×${probe.docScrollH}  scrollTop ${probe.scrollTop}/${probe.scrollMax}  standalone=${probe.standalone}`);
+      console.log(`  pads: topbar-top ${probe.pads.topbar}  composer-bottom ${probe.pads.composer}  sheet-bottom ${probe.pads.sheet ?? '—'}`);
+      if (probe.items?.length) console.log(`  items: ${probe.items.join(' ')}`);
+      for (const b of probe.boxes) console.log(`  ${b.sel.padEnd(15)} y ${String(b.top).padStart(7)} → ${String(b.bottom).padStart(7)}  h ${String(b.h).padStart(7)}  x ${b.left}→${b.right}  scroll ${b.scrollW}×${b.scrollH} / client ${b.clientW}×${b.clientH}`);
+      if (probe.overflow.length) console.log(`  ⚠ horizontal overflow:`, JSON.stringify(probe.overflow));
+      // The bug the phone showed: the shell must end exactly at the viewport bottom.
+      const screen = probe.boxes.find((b: any) => b.sel === '.screen');
+      if (screen && Math.abs(screen.bottom - probe.vh) > 1) {
+        console.log(`  ⚠ shell does not fill the viewport: .screen ends at ${screen.bottom}, viewport is ${probe.vh}`);
+      }
+      if (!!d.standalone !== !!probe.standalone) {
+        console.log(`  ⚠ display-mode mismatch: wanted standalone=${!!d.standalone}, page reports ${probe.standalone}`);
+      }
+    }
+
+    cdp.close();
+    if (!has('--keep')) { proc.kill('SIGKILL'); fs.rmSync(userDataDir, { recursive: true, force: true }); }
   }
 
   fs.writeFileSync(path.join(OUT, 'report.json'), JSON.stringify(report, null, 2));
   if (consoleErrors.length) console.log(`\n⚠ console errors:\n  ${consoleErrors.slice(0, 8).join('\n  ')}`);
-  console.log(`\nwrote ${shots.length} screenshots to ${OUT}`);
-
-  cdp.close();
-  if (!has('--keep')) { proc.kill('SIGKILL'); fs.rmSync(userDataDir, { recursive: true, force: true }); }
+  console.log(`\nwrote ${written} screenshots to ${OUT}`);
   preview.close();
   process.exit(0);
 }

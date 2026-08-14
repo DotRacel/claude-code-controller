@@ -10,12 +10,18 @@
  */
 import { memo, useRef, useState } from 'react';
 import type { Item, ToolCall, TodoTask, Question } from '../model.ts';
-import { toolDisplayName, toolArg, splitPath, argIsPath, resultLine, durationLabel } from '../tools.ts';
+import { toolDisplayName, toolArg, splitPath, argIsPath, resultLine } from '../tools.ts';
 import { renderMarkdown } from '../md.ts';
 import { haptic } from '../haptics.ts';
 import { Check, Alert, Brain, ClaudeMark } from '../icons.tsx';
 
 const LONG_PRESS_MS = 400;
+/**
+ * A touch that travels further than this is a scroll, not a tap. iOS does NOT reliably send
+ * touchcancel when a drag inside a scroll container turns into a scroll — the same touch just
+ * ends normally — so a hand-rolled touchend handler would open the card you scrolled off.
+ */
+const SCROLL_SLOP_PX = 10;
 
 export interface TranscriptHandlers {
   onOpenOutput: (call: ToolCall) => void;
@@ -40,7 +46,8 @@ export const ItemView = memo(function ItemView({ it, isLast, h }: { it: Item; is
         </div>
       );
     case 'thinking':
-      return <ThinkingView it={it} cls={cls} />;
+      // A textless block carries nothing to read, so it renders nothing at all.
+      return it.text.trim() ? <ThinkingView it={it} cls={cls} /> : null;
     case 'tools':
       return <ToolGroup calls={it.calls} cls={cls} onOpen={h.onOpenOutput} />;
     case 'todo':
@@ -71,19 +78,19 @@ export const ItemView = memo(function ItemView({ it, isLast, h }: { it: Item; is
 
 /**
  * The data plane relays `thinking: ""` — the signature only, never the reasoning text (verified
- * across every thinking block in a real session). So this is a marker, not a disclosure; it
- * expands only in the hypothetical case where text does arrive.
+ * across every thinking block in a real session). So in practice this never renders; it exists for
+ * the case where a future version does send the text, and only ever with text in hand (ItemView
+ * drops the textless markers).
  */
 function ThinkingView({ it, cls }: { it: Extract<Item, { kind: 'thinking' }>; cls?: string }) {
   const [open, setOpen] = useState(false);
-  const hasText = !!it.text.trim();
   return (
     <div className={`thinking ${cls ?? ''}`}>
-      <button className="thinking-head" onClick={() => hasText && setOpen(!open)} disabled={!hasText}>
+      <button className="thinking-head" onClick={() => setOpen(!open)}>
         <Brain size={14} />
-        思考{it.tokens ? ` · ${it.tokens} tokens` : ''}{hasText ? (open ? ' · 收起' : ' · 展开') : ''}
+        思考 · {open ? '收起' : '展开'}
       </button>
-      {open && hasText && <div className="thinking-body">{it.text}</div>}
+      {open && <div className="thinking-body">{it.text}</div>}
     </div>
   );
 }
@@ -103,10 +110,11 @@ function ToolRow({ call, onOpen }: { call: ToolCall; onOpen: (c: ToolCall) => vo
   const timer = useRef<number | undefined>(undefined);
   const fired = useRef(false);
   const touched = useRef(false); // a touch also emits synthetic mouse events; ignore those
+  const from = useRef<{ x: number; y: number } | null>(null); // where the finger landed
+  const scrolled = useRef(false); // …and whether it then moved enough to be a scroll
   const label = toolDisplayName(call.name);
   const arg = toolArg(call.name, call.input);
   const res = resultLine(call);
-  const dur = durationLabel(call.endedAt && call.startedAt ? call.endedAt - call.startedAt : undefined);
   const openable = !!call.result;
 
   const begin = () => {
@@ -133,8 +141,23 @@ function ToolRow({ call, onOpen }: { call: ToolCall; onOpen: (c: ToolCall) => vo
   return (
     <button
       className={`tool-row${pressed ? ' press' : ''}`}
-      onTouchStart={() => { touched.current = true; begin(); }}
-      onTouchEnd={() => end(true)}
+      onTouchStart={(e) => {
+        touched.current = true;
+        const t = e.touches[0];
+        from.current = t ? { x: t.clientX, y: t.clientY } : null;
+        scrolled.current = false;
+        begin();
+      }}
+      onTouchMove={(e) => {
+        const f = from.current;
+        const t = e.touches[0];
+        if (!f || !t || scrolled.current) return;
+        if (Math.abs(t.clientY - f.y) > SCROLL_SLOP_PX || Math.abs(t.clientX - f.x) > SCROLL_SLOP_PX) {
+          scrolled.current = true;
+          end(false); // also kills the pending long-press, so a slow scroll cannot open it either
+        }
+      }}
+      onTouchEnd={() => end(!scrolled.current)}
       onTouchCancel={() => end(false)}
       onMouseDown={() => { if (!touched.current) begin(); }}
       onMouseUp={() => { if (!touched.current) end(true); }}
@@ -147,9 +170,9 @@ function ToolRow({ call, onOpen }: { call: ToolCall; onOpen: (c: ToolCall) => vo
       </div>
       {res && (
         <div className={`tool-result-line${res.isError ? ' err' : ''}`}>
-          {dur && <span className="tool-badge">{dur}</span>}
-          {res.text}
-          {res.tapHint && <span className="hint"> — 点按查看输出</span>}
+          {res.delta
+            ? <><span className="add">+{res.delta.add}</span> <span className="del">−{res.delta.del}</span></>
+            : res.text}
         </div>
       )}
     </button>

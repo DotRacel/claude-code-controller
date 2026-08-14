@@ -158,7 +158,7 @@ export function ChatView({ session, sock, connection, onBack, registerEvent, reg
         {state.items.map((it, i) => (
           <ItemView key={it.id} it={it} isLast={i === state.items.length - 1} h={handlers} />
         ))}
-        {busy && <ActivityLine running={state.live.running} tokens={state.live.thinkingTokens} />}
+        {busy && <ActivityLine running={state.live.running} />}
       </div>
 
       <p className="sr-only" role="status" aria-live="polite">{announce}</p>
@@ -198,7 +198,7 @@ export function ChatView({ session, sock, connection, onBack, registerEvent, reg
   );
 }
 
-function ActivityLine({ running, tokens }: { running?: { name: string; arg: string; since: number }; tokens?: number }) {
+function ActivityLine({ running }: { running?: { name: string; arg: string; since: number } }) {
   const [, tick] = useState(0);
   useEffect(() => {
     if (!running) return;
@@ -211,10 +211,33 @@ function ActivityLine({ running, tokens }: { running?: { name: string; arg: stri
     const s = Math.max(0, Math.round((Date.now() - running.since) / 1000));
     const dur = s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
     text = `${toolDisplayName(running.name)}${running.arg ? ` · ${running.arg.split('\n')[0].slice(0, 40)}` : ''} · ${dur}`;
-  } else if (tokens) {
-    text = `思考中 · ${tokens} tokens`;
   }
-  return <div className="activity"><span className="pulse" />{text}</div>;
+  return <div className="activity"><ThinkingSpinner />{text}</div>;
+}
+
+/** The CLI's own thinking glyph: it grows to a full star and shrinks back, one frame at a time. */
+const FRAMES = ['·', '✢', '✳', '✶', '✻', '✽'];
+const SPINNER_MS = 120;
+
+function ThinkingSpinner() {
+  const [i, setI] = useState(0);
+  const dir = useRef(1);
+
+  useEffect(() => {
+    // 0c: reduce-motion freezes every animation, and this one is driven by JS, so the media query
+    // in the stylesheet cannot reach it.
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+    const t = setInterval(() => {
+      setI((prev) => {
+        if (prev === FRAMES.length - 1) dir.current = -1;
+        if (prev === 0) dir.current = 1;
+        return prev + dir.current;
+      });
+    }, SPINNER_MS);
+    return () => clearInterval(t);
+  }, []);
+
+  return <span className="spin" aria-hidden="true">{FRAMES[i]}</span>;
 }
 
 function Banner({ connection, sessionOffline, machine, onRetry }: {
@@ -264,7 +287,8 @@ async function copyTranscript(items: Item[]): Promise<void> {
   for (const it of items) {
     if (it.kind === 'user') out.push(`\n## 你\n\n${it.text}`);
     else if (it.kind === 'prose') out.push(`\n${it.text}`);
-    else if (it.kind === 'thinking') out.push(`\n_思考${it.tokens ? ` · ${it.tokens} tokens` : ''}_`);
+    // Textless markers are not in the transcript either, so the export must not invent them.
+    else if (it.kind === 'thinking') { if (it.text.trim()) out.push(`\n_思考_\n\n${it.text}`); }
     else if (it.kind === 'tools') for (const c of it.calls) out.push(`\n- **${toolDisplayName(c.name)}** \`${(c.input?.command ?? c.input?.file_path ?? c.input?.pattern ?? '').toString().split('\n')[0]}\` — ${c.status}`);
     else if (it.kind === 'todo') out.push(`\n${it.tasks.map((t) => `- [${t.status === 'completed' ? 'x' : ' '}] ${t.subject}`).join('\n')}`);
     else if (it.kind === 'status') out.push(`\n_${it.text}_`);

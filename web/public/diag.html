@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<!-- Exactly the app's viewport meta, so the numbers below describe the app's situation. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#262624">
+<meta name="color-scheme" content="dark">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Claude Remote — 视口诊断</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #262624; color: #f5f4ef;
+    font: 400 15px/1.5 -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif; }
+  /* The three candidate heights, measured rather than assumed. */
+  #vh100  { position: fixed; top: 0; left: 0; width: 3px; height: 100vh;  background: #7fb069; }
+  #dvh100 { position: fixed; top: 0; left: 6px; width: 3px; height: 100dvh; background: #e0b25f; }
+  #pct100 { position: fixed; top: 0; left: 12px; width: 3px; height: 100%; background: #c96442; }
+  main { padding: max(env(safe-area-inset-top, 0px), 12px) 20px max(env(safe-area-inset-bottom, 0px), 12px) 24px; }
+  h1 { font-size: 17px; margin: 0 0 4px; }
+  p.sub { margin: 0 0 16px; color: #a8a5a0; font-size: 12.5px; }
+  table { border-collapse: collapse; width: 100%; font: 400 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  td { padding: 5px 0; border-bottom: 1px solid rgba(245,244,239,.07); vertical-align: top; }
+  td.k { color: #a8a5a0; padding-right: 10px; white-space: nowrap; }
+  td.v { text-align: right; word-break: break-all; }
+  .flag { color: #e07a5f; }
+  .ok { color: #7fb069; }
+  button { width: 100%; margin-top: 18px; min-height: 50px; border-radius: 25px; border: none;
+    background: #f5f4ef; color: #1f1e1c; font: 600 16px/1 inherit; }
+  .legend { margin-top: 14px; color: #8a8781; font-size: 12px; line-height: 1.7; }
+  .legend b { color: #cfccc5; }
+</style>
+</head>
+<body>
+<!-- Left edge: three colored bars, one per unit. If they end at different heights you can SEE
+     which unit is lying, without reading a single number. -->
+<div id="vh100"></div><div id="dvh100"></div><div id="pct100"></div>
+<main>
+  <h1>视口诊断</h1>
+  <p class="sub">从主屏幕图标打开（不是 Safari 标签页），然后把这一屏发我。左边三条竖线分别是 100vh（绿）/ 100dvh（黄）/ 100%（橙）——谁短谁就在撒谎。</p>
+  <table id="out"></table>
+  <button onclick="copy()">复制全部</button>
+  <p class="legend">
+    <b>display-mode</b> 是 standalone 才算真装成了 App。<br>
+    <b>safe-area-inset-top</b> = 0 表示 iOS 没把状态栏做成透明的（走的是 manifest 安装路径），
+    这时内容是被系统状态栏往下顶的，不是我们留的白。<br>
+    <b>dvh ≠ innerHeight</b> 就是 iOS 26.0 那个底部空带的 bug（Apple 在 26.1 修了）。
+  </p>
+</main>
+<script>
+  const px = (v) => Math.round(v * 100) / 100;
+  function inset(side) {
+    const d = document.createElement('div');
+    d.style.cssText = `position:fixed;top:0;left:0;width:0;height:0;padding-${side}:env(safe-area-inset-${side},0px)`;
+    document.body.appendChild(d);
+    const v = getComputedStyle(d)['padding' + side[0].toUpperCase() + side.slice(1)];
+    d.remove();
+    return v;
+  }
+  function unit(u) {
+    const d = document.createElement('div');
+    d.style.cssText = `position:fixed;top:0;left:0;width:0;height:100${u}`;
+    document.body.appendChild(d);
+    const v = px(d.getBoundingClientRect().height);
+    d.remove();
+    return v;
+  }
+  let rows = [];
+  function collect() {
+    const dm = ['standalone', 'fullscreen', 'minimal-ui', 'browser'].find((m) => matchMedia(`(display-mode: ${m})`).matches) || '?';
+    const ih = window.innerHeight;
+    const dvh = unit('dvh'), vh = unit('vh'), pct = px(document.documentElement.clientHeight);
+    const vv = window.visualViewport;
+    rows = [
+      ['display-mode', dm, dm === 'standalone' ? 'ok' : 'flag'],
+      ['navigator.standalone', String(window.navigator.standalone), ''],
+      ['screen', `${screen.width}×${screen.height}`, ''],
+      ['innerWidth×innerHeight', `${window.innerWidth}×${ih}`, ''],
+      ['visualViewport', vv ? `${px(vv.width)}×${px(vv.height)} @${px(vv.offsetTop)}` : 'n/a', ''],
+      ['devicePixelRatio', String(devicePixelRatio), ''],
+      ['100vh', `${vh}px`, vh === ih ? '' : 'flag'],
+      ['100dvh', `${dvh}px`, dvh === ih ? 'ok' : 'flag'],
+      ['100% (html)', `${pct}px`, pct === ih ? 'ok' : 'flag'],
+      ['inset top', inset('top'), inset('top') === '0px' ? 'flag' : 'ok'],
+      ['inset bottom', inset('bottom'), ''],
+      ['inset left/right', `${inset('left')} / ${inset('right')}`, ''],
+      ['orientation', String(screen.orientation && screen.orientation.type), ''],
+      ['userAgent', navigator.userAgent, ''],
+    ];
+    document.getElementById('out').innerHTML = rows
+      .map(([k, v, c]) => `<tr><td class="k">${k}</td><td class="v ${c}">${v}</td></tr>`).join('');
+  }
+  function copy() {
+    const text = rows.map(([k, v]) => `${k}: ${v}`).join('\n');
+    navigator.clipboard.writeText(text).then(
+      () => { document.querySelector('button').textContent = '已复制 ✓'; },
+      () => { document.querySelector('button').textContent = '复制失败，手动截图'; },
+    );
+  }
+  collect();
+  addEventListener('resize', collect);
+  if (window.visualViewport) visualViewport.addEventListener('resize', collect);
+</script>
+</body>
+</html>

@@ -18,12 +18,13 @@ const firstLine = (s: string, max = 120): string => {
 };
 const countLines = (s: string): number => (s ? s.split('\n').filter((l) => l.length).length : 0);
 
-/** `+6 −2` for an Edit, computed from the strings it was given. */
-function editDelta(input: any): string | null {
+/** `+6 −2` for an Edit, computed from the strings it was given. Returned as numbers because the
+ * card colours the two halves separately (green added / red removed). */
+function editDelta(input: any): { add: number; del: number } | null {
   if (typeof input?.new_string !== 'string' || typeof input?.old_string !== 'string') return null;
   const add = input.new_string ? input.new_string.split('\n').length : 0;
   const del = input.old_string ? input.old_string.split('\n').length : 0;
-  return `+${add} −${del}`;
+  return { add, del };
 }
 
 export function durationLabel(ms: number | undefined): string | null {
@@ -35,7 +36,9 @@ export function durationLabel(ms: number | undefined): string | null {
   return `${m}m ${String(Math.round(s % 60)).padStart(2, '0')}s`;
 }
 
-export interface ResultLine { text: string; isError?: boolean; tapHint?: boolean }
+/** `text` is always the plain reading of the line (it is also the card's accessible name); `delta`
+ * is set alongside it when the two counts should render as coloured spans instead. */
+export interface ResultLine { text: string; isError?: boolean; delta?: { add: number; del: number } }
 
 /** The single line a collapsed tool card shows. Status is present tense, lowercase after the
  * first word (design copy rule): "Running…", not "RUNNING". */
@@ -45,17 +48,17 @@ export function resultLine(call: ToolCall): ResultLine | null {
 
   const out = call.result ?? '';
   if (call.status === 'error') {
-    return { text: firstLine(out) || '失败', isError: true, tapHint: !!out };
+    return { text: firstLine(out) || '失败', isError: true };
   }
   switch (call.name) {
     case 'Read': {
       const n = countLines(out);
-      return n ? { text: `读了 ${n} 行`, tapHint: true } : { text: '完成' };
+      return { text: n ? `读了 ${n} 行` : '完成' };
     }
     case 'Edit':
     case 'NotebookEdit': {
       const d = editDelta(call.input);
-      return { text: d ?? '已修改', tapHint: !!out };
+      return d ? { text: `+${d.add} −${d.del}`, delta: d } : { text: '已修改' };
     }
     case 'Write': {
       const n = typeof call.input?.content === 'string' ? call.input.content.split('\n').length : 0;
@@ -64,11 +67,11 @@ export function resultLine(call: ToolCall): ResultLine | null {
     case 'Grep':
     case 'Glob': {
       const n = countLines(out);
-      return { text: n ? `${n} 处结果` : '无匹配', tapHint: n > 0 };
+      return { text: n ? `${n} 处结果` : '无匹配' };
     }
     default: {
       const l = firstLine(out);
-      return l ? { text: l, tapHint: out.length > l.length } : { text: '完成' };
+      return { text: l || '完成' };
     }
   }
 }

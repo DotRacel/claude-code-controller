@@ -197,9 +197,17 @@ and `cd web && npm run build` (typechecks first).
 ### Reviewing the phone UI without a phone
 
 ```bash
-npm run ui-preview   # :8791 — the real SPA against fake-but-real-shaped sessions
-npm run ui-shot      # headless chromium at 390×844 → artifacts/ui/*.png + layout numbers
+npm run ui-preview                       # :8791 — the real SPA against fake-but-real-shaped sessions
+npm run ui-shot                          # both device profiles → artifacts/ui/<device>/*.png + numbers
+npm run ui-shot -- --device pro-max-pwa  # just the installed-web-app profile
 ```
+
+Two profiles, because the bugs differ: `phone` is a 390×844 browser tab, and `pro-max-pwa` is the
+installed web app on an iPhone 15 Pro Max — 430×932 **with real safe-area insets** (59pt of Dynamic
+Island, 34pt of home indicator, via `Emulation.setSafeAreaInsetsOverride`) and genuinely
+`display-mode: standalone`. That last part needs chromium launched with `--app=<url>`:
+`Emulation.setEmulatedMedia` accepts a `display-mode` feature and then silently ignores it
+(measured — the page still reports `browser`), so a standalone run gets its own browser process.
 
 `test/ui-preview.ts` replays `test/fixtures/transcript-shapes.jsonl` **through the actual
 data-plane** (`POST …/worker/events`) into three seeded sessions — one live transcript, one waiting
@@ -235,6 +243,37 @@ whenever the block scrolled sideways).
 
 Note when reading screenshots on a fresh box: with no CJK font installed every Chinese glyph
 renders as tofu. `fc-list :lang=zh` first.
+
+### Installed on iOS: safe areas, viewport units, and the scroll-off tap
+
+Three more things only the real installed app showed (reported on an iPhone 15 Pro Max, iOS 26):
+
+- **Safe areas now use `max(inset, gap)`, never `inset + gap`.** Adding a gap on top of an inset
+  stacks padding on space the Dynamic Island already took; and when iOS installs via the manifest
+  instead of the `apple-*` meta tags the inset is `0`, where `max()` still leaves the plain gap.
+  Same at the bottom, which is where the wasted space was most visible (44px → 34px).
+- **The height chain is `%`, with `dvh` only in a browser tab.** iOS 26.0 mis-measures `dvh` for
+  viewport-sized containers, leaving a dead scrollable band at the bottom of a standalone PWA
+  (Apple fixed it in Safari 26.1). An installed app has no collapsing chrome, so `%` is both
+  correct and immune; `@media (display-mode: browser)` keeps `dvh` where the URL bar does move.
+  `html, body { overflow: hidden }` backs this up — if the document can never scroll, the browser
+  stops collapsing its chrome at all.
+- **A tool card no longer opens when you scroll off it.** `ToolRow` rolls its own
+  touchstart/touchend (it shares the code path with the long-press), and iOS does *not* reliably
+  send `touchcancel` when a drag inside a scroll container becomes a scroll — the same touch just
+  ends normally, which read as a tap. It now cancels past 10px of travel, which also kills the
+  pending long-press so a slow scroll cannot fire it either.
+
+What is **not** fixable from CSS: iOS 26 paints a Liquid Glass "scroll edge effect" behind the
+status bar, and there is no web-facing opt-out (`theme-color` is ignored in Safari 26; the native
+`scrollEdgeEffectStyle` is not exposed). All a page can do is control what gets sampled, which is
+why `.topbar` / `.topbar-lg` now paint an explicit opaque `--surface` rather than inheriting it.
+
+`web/public/diag.html` (served at `/diag.html`, deliberately excluded from the service worker
+cache) is the device-side counterpart: open it from the home-screen icon and it reports
+`display-mode`, `innerHeight` vs `100vh` vs `100dvh` vs `100%`, all four insets and the UA, plus
+three coloured bars down the left edge so a lying viewport unit is visible without reading a
+number.
 
 ### Icons: the official Claude symbol
 

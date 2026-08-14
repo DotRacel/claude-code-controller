@@ -37,7 +37,8 @@ self.addEventListener('activate', (event) => {
 });
 
 function isPassthrough(url) {
-  return url.pathname.startsWith('/v1') || url.pathname.startsWith('/ws');
+  // /diag.html is the viewport diagnostic — a cached copy would report stale numbers after a fix.
+  return url.pathname.startsWith('/v1') || url.pathname.startsWith('/ws') || url.pathname === '/diag.html';
 }
 
 self.addEventListener('notificationclick', (event) => {

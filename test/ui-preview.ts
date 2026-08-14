@@ -49,6 +49,22 @@ const EXTRA: any[] = [
     },
   },
   { type: 'user', timestamp: '2026-08-14T11:20:31.000Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_prev1', content: 'vite v5.4.11 building for production...\n✓ 41 modules transformed.\ndist/index.html                   1.18 kB\ndist/assets/index-C3nQ8f2a.css   14.02 kB\ndist/assets/index-Bq7dK1vX.js   162.44 kB\n✓ built in 1.34s' }] } },
+  // An Edit, so the +added / −removed counts on a tool card are reviewable in a screenshot.
+  {
+    type: 'assistant', timestamp: '2026-08-14T11:20:32.000Z',
+    message: {
+      role: 'assistant', model: 'claude-opus-5',
+      content: [{
+        type: 'tool_use', id: 'tu_prev_edit', name: 'Edit',
+        input: {
+          file_path: '/home/racel/claude-code-controller/web/src/styles.css',
+          old_string: '.scroll { flex: 1; overflow-y: auto; }',
+          new_string: '.scroll {\n  flex: 1;\n  min-height: 0;\n  overflow-y: auto;\n  -webkit-overflow-scrolling: touch;\n}',
+        },
+      }],
+    },
+  },
+  { type: 'user', timestamp: '2026-08-14T11:20:32.400Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_prev_edit', content: 'The file /home/racel/claude-code-controller/web/src/styles.css has been updated successfully.' }] } },
   {
     type: 'assistant', timestamp: '2026-08-14T11:20:33.000Z',
     message: { role: 'assistant', model: 'claude-opus-5', content: [{ type: 'tool_use', id: 'tu_prev2', name: 'Read', input: { file_path: '/home/racel/claude-code-controller/web/src/components/Composer.tsx' } }] },
