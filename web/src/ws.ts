@@ -15,6 +15,7 @@ export interface Handlers {
   onSessions: (s: SessionView[]) => void;
   onEvent: (sessionId: string, payload: any) => void;
   onHistory?: (sessionId: string, events: any[]) => void;
+  onNotify?: (sessionId: string, message: string, ready?: boolean) => void;
   onStatus?: (connected: boolean) => void;
 }
 
@@ -35,6 +36,7 @@ export class ControlSocket {
       if (m.type === 'sessions') this.h.onSessions(m.sessions);
       else if (m.type === 'event') this.h.onEvent(m.sessionId, m.payload);
       else if (m.type === 'history') this.h.onHistory?.(m.sessionId, m.events || []);
+      else if (m.type === 'notify' && typeof m.message === 'string') this.h.onNotify?.(m.sessionId, m.message, !!m.ready);
     };
     ws.onclose = () => {
       this.h.onStatus?.(false);

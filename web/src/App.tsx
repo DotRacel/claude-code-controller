@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { ControlSocket, getCredential, setCredential, clearCredential, type SessionView } from './ws';
 import { takeVisibleUserTexts } from './transcript';
+import { isPushNotificationToolUse } from '../../src/push-event.ts';
+import { notifyPermission, requestNotifyPermission, showPushNotification, pushNotificationFrom } from './notify';
 
 // ── transcript item model (derived from docs/EVENTS.md payloads) ──
 type Item =
@@ -74,8 +76,13 @@ function Home({ credential, onLogout }: { credential: string; onLogout: () => vo
   useEffect(() => {
     const sock = new ControlSocket(credential, {
       onSessions: (s) => setSessions(s),
-      onEvent: (sid, p) => eventCb.current(sid, p),
+      onEvent: (sid, p) => {
+        const note = pushNotificationFrom(p);
+        if (note) showPushNotification(note.message, { force: note.ready || document.visibilityState !== 'visible' });
+        eventCb.current(sid, p);
+      },
       onHistory: (sid, evs) => historyCb.current(sid, evs),
+      onNotify: (_sid, message, ready) => { showPushNotification(message, { force: !!ready || document.visibilityState !== 'visible' }); },
       onStatus: setConnected,
     });
     sock.connect();
@@ -103,6 +110,8 @@ function relTime(ts: number): string {
 }
 
 function SessionList({ sessions, connected, onOpen, onLogout }: { sessions: SessionView[]; connected: boolean; onOpen: (s: SessionView) => void; onLogout: () => void }) {
+  const [perm, setPerm] = useState(notifyPermission());
+  const askNotify = async () => { await requestNotifyPermission(); setPerm(notifyPermission()); };
   return (
     <div className="screen">
       <header className="topbar">
@@ -110,6 +119,9 @@ function SessionList({ sessions, connected, onOpen, onLogout }: { sessions: Sess
         <span className="title">会话</span>
         <button className="link" onClick={onLogout}>退出</button>
       </header>
+      {perm === 'default' && (
+        <button className="notify-banner" onClick={askNotify}>会话就绪时通知我</button>
+      )}
       <div className="scroll">
         {sessions.length === 0 && (
           <div className="empty">
@@ -154,7 +166,7 @@ function ChatView({ session, sock, onBack, registerEvent, registerHistory }: { s
         for (const b of payload.message?.content || []) {
           if (b.type === 'text' && b.text) push({ kind: 'assistant', text: b.text });
           else if (b.type === 'thinking' && b.thinking) push({ kind: 'thinking', text: b.thinking });
-          else if (b.type === 'tool_use') push({ kind: 'tool_use', id: b.id, name: b.name, input: b.input });
+          else if (b.type === 'tool_use' && !isPushNotificationToolUse(b)) push({ kind: 'tool_use', id: b.id, name: b.name, input: b.input });
         }
       } else if (t === 'user') {
         const taken = takeVisibleUserTexts(payload, pendingWeb.current, isHistory);

@@ -254,6 +254,9 @@ export interface InteractiveGateSpec {
   rebindRe: string; // regex on the located function's body; each capture group = a name to rebind
   rebindValues: string[]; // rebindValues[i] is bound to capture group i+1 (after ${URL}/${TOKEN} fill)
   bpAnchor?: string; // if set, breakpoint at this substring inside the body (${N} = capture group N+1); else at the function-body entry
+  // Keep the breakpoint after the first hit. Connect-time gates rebind *locals*
+  // (`ie`, `le`, one-shot String.prototype) that are recreated on every `/rc`.
+  sticky?: boolean;
 }
 
 export const INTERACTIVE_GATES: InteractiveGateSpec[] = [
@@ -273,6 +276,7 @@ export const INTERACTIVE_GATES: InteractiveGateSpec[] = [
     locate: { anchorStr: 'Prerequisites passed, enabling bridge', declKeyword: 'async function' },
     rebindRe: 'let [\\w$]+=await ([\\w$]+)\\(\\);if\\([\\w$]+\\)return\\{kind[^]*?let [\\w$]+=await ([\\w$]+)\\(\\);if\\([\\w$]+\\)return\\{kind[^]*?if\\(![\\w$]+\\(\\)\\)return\\{kind[^]*?await [\\w$]+\\(\\),await ([\\w$]+)\\(\\)',
     rebindValues: ['async function(){return null}', 'async function(){return null}', 'async function(){return !1}'],
+    sticky: true,
   },
   // REPL-bridge INIT (Asc, bridge-repl-v2): reads getAccessToken() into `ie`; `if(!ie)` aborts
   // with "No OAuth token" (BYOK has none) BEFORE any request — this, not preflight, is what
@@ -285,6 +289,7 @@ export const INTERACTIVE_GATES: InteractiveGateSpec[] = [
     rebindRe: '([\\w$]+)=([\\w$]+)\\(\\);if\\(!\\1\\)return[^]*?bridge_connect_no_token',
     bpAnchor: 'if(!${0})',
     rebindValues: ['${TOKEN}', 'function(){return ${TOKEN}}'],
+    sticky: true,
   },
   // REPL-bridge INIT gating (HKm, init-repl-bridge): a long precondition chain. BYOK clears most
   // of it via the rebinds above (the OAuth check `if(!eF())` is satisfied because eF is
@@ -298,6 +303,7 @@ export const INTERACTIVE_GATES: InteractiveGateSpec[] = [
     rebindRe: '([\\w$]+)=await [\\w$]+\\(\\);if\\(!\\1\\)return [\\w$]+\\("no_org_uuid"',
     bpAnchor: 'if(!${0})',
     rebindValues: ['"ccc00000-0000-4000-8000-000000000000"'],
+    sticky: true,
   },
   // Same inline scheme check as bridgeMain.httpscheme, on the /rc helper (throws, does not
   // exit). Quote-prefixed message is unique to this site (headless prefixes `Error: `).
@@ -307,6 +313,7 @@ export const INTERACTIVE_GATES: InteractiveGateSpec[] = [
     rebindRe: '([\\w$]+)=[\\w$]+\\(\\);if\\(\\1\\.startsWith\\("http://"\\)',
     bpAnchor: 'if(${0}.startsWith("http://")',
     rebindValues: ['(function(u){var _s=String.prototype.startsWith;String.prototype.startsWith=function(){String.prototype.startsWith=_s;return!1};return u})(${0})'],
+    sticky: true,
   },
 ];
 

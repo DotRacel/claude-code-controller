@@ -1,0 +1,21 @@
+{
+  "id": "/",
+  "name": "Claude Remote",
+  "short_name": "Claude",
+  "description": "在手机上遥控本机 Claude Code 会话",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["standalone", "browser"],
+  "orientation": "portrait",
+  "background_color": "#0f0f0f",
+  "theme_color": "#0f0f0f",
+  "lang": "zh",
+  "dir": "ltr",
+  "categories": ["productivity", "utilities"],
+  "icons": [
+    { "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "./icons/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

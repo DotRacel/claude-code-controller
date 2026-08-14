@@ -374,7 +374,8 @@ export async function launchInteractiveWithGatesRebound(opts: InteractiveLaunchO
         let best = Infinity;
         if (loc) {
           for (const r of reports) {
-            if (r.line === loc.lineNumber && r.breakpointId && !r.hit && r.col != null && loc.columnNumber >= r.col - 4) {
+            const sticky = specById.get(r.id)?.sticky;
+            if (r.line === loc.lineNumber && r.breakpointId && (sticky || !r.hit) && r.col != null && loc.columnNumber >= r.col - 4) {
               const d = Math.abs(loc.columnNumber - r.col);
               if (d < best) { best = d; rep = r; }
             }
@@ -394,8 +395,10 @@ export async function launchInteractiveWithGatesRebound(opts: InteractiveLaunchO
             if (r !== 'ok') ok = false;
           }
           rep.reboundOk = ok;
-          log(`[int] HIT ${rep.id} rebind [${names.join(',')}] ${ok ? 'ok' : 'PARTIAL/FAIL'}`);
-          if (rep.breakpointId) await ic.send('Debugger.removeBreakpoint', { breakpointId: rep.breakpointId }).catch(() => {});
+          log(`[int] HIT ${rep.id} rebind [${names.join(',')}] ${ok ? 'ok' : 'PARTIAL/FAIL'}${spec.sticky ? ' (sticky)' : ''}`);
+          // Hot-path gates (baseurl/token/enabled) are rebound once. Connect-time
+          // gates patch per-invocation locals and must fire on every `/rc`.
+          if (!spec.sticky && rep.breakpointId) await ic.send('Debugger.removeBreakpoint', { breakpointId: rep.breakpointId }).catch(() => {});
         }
       } catch (e: any) {
         log(`[int] paused handler error: ${e.message}`);

@@ -14,7 +14,8 @@
   --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
 
-* { box-sizing: border-box; }
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html { color-scheme: dark; }
 html, body, #root { height: 100%; margin: 0; }
 body {
   background: var(--bg);
@@ -22,6 +23,9 @@ body {
   font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
   overscroll-behavior: none;
+}
+@media (display-mode: standalone) {
+  html, body, #root { height: 100dvh; }
 }
 button { font: inherit; cursor: pointer; }
 .mono { font-family: var(--mono); }
@@ -56,6 +60,8 @@ button { font: inherit; cursor: pointer; }
 .scroll { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
 
 /* ── session list ── */
+.notify-banner { width: 100%; border: none; border-bottom: 1px solid var(--border); background: var(--surface-2); color: var(--text); padding: 10px 14px; font-size: 14px; text-align: center; }
+.notify-banner:active { background: var(--surface); }
 .empty { padding: 60px 24px; text-align: center; }
 .session-card { display: block; width: 100%; text-align: left; background: var(--surface); border: none; border-bottom: 1px solid var(--border); padding: 14px 16px; color: var(--text); }
 .session-card .row { display: flex; align-items: center; gap: 8px; }
