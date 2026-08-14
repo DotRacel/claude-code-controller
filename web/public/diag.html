@@ -81,8 +81,15 @@
     const ih = window.innerHeight;
     const dvh = unit('dvh'), vh = unit('vh'), pct = px(document.documentElement.clientHeight);
     const vv = window.visualViewport;
-    // The app sets html { height: 100dvh }, so <html>'s own rect IS the app shell's box.
+    // THIS page styles itself with height:100%, so <html>'s rect is the short (ICB) box — useful
+    // as the negative control, but it is NOT what the app does. The app is height:100dvh, so
+    // measure a document-flow dvh box separately: that is the real shell geometry.
     const hr = document.documentElement.getBoundingClientRect();
+    const probe = document.createElement('div');
+    probe.style.cssText = 'position:absolute;top:0;left:0;width:0;height:100dvh';
+    document.body.appendChild(probe);
+    const dr = probe.getBoundingClientRect();
+    probe.remove();
     const icbTop = document.getElementById('pct100').getBoundingClientRect().top; // absolute, top:0
     rows = [
       ['display-mode', dm, dm === 'standalone' ? 'ok' : 'flag'],
@@ -95,10 +102,9 @@
       ['100dvh', `${dvh}px`, dvh === ih ? 'ok' : 'flag'],
       ['100% (文档流/ICB)', `${pct}px`, pct === ih ? 'ok' : 'flag'],
       ['innerHeight − 100%', `${px(ih - pct)}px`, ih === pct ? 'ok' : 'flag'],
-      // Where the ICB actually starts, and where a 100dvh document box actually ends. This is
-      // the app's own shell box: html is height:100dvh, so if its rect is not 0→innerHeight the
-      // composer is off-screen and `overflow: hidden` makes it unreachable.
-      ['<html> 盒子 y', `${px(hr.top)} → ${px(hr.bottom)}`, Math.abs(hr.top) < 1 && Math.abs(hr.bottom - ih) < 1 ? 'ok' : 'flag'],
+      // dvh box = what the app's shell does. html box = this page's own % chain (expected short).
+      ['dvh 盒子 y（=App 外壳）', `${px(dr.top)} → ${px(dr.bottom)}`, Math.abs(dr.top) < 1 && Math.abs(dr.bottom - ih) < 1 ? 'ok' : 'flag'],
+      ['本页 &lt;html&gt; 盒子 y（%，对照）', `${px(hr.top)} → ${px(hr.bottom)}`, ''],
       ['ICB 顶部偏移', `${px(icbTop)}px`, Math.abs(icbTop) < 1 ? 'ok' : 'flag'],
       ['inset top', inset('top'), inset('top') === '0px' ? 'flag' : 'ok'],
       ['inset bottom', inset('bottom'), ''],
@@ -118,9 +124,10 @@
     else if (dvh === ih) say.push(`<span class="flag">⚠ 用 dvh</span>：% 比窗口短 ${px(ih - pct)}px（视口顶部安全区没算进 ICB），底部会空出这么多`);
     else if (pct === ih) say.push(`<span class="flag">⚠ 用 %</span>：dvh 比窗口差 ${px(ih - dvh)}px（iOS 26.0 的 dvh 回归，26.1 已修）`);
     else say.push(`<span class="flag">⚠ dvh 和 % 都不等于 innerHeight（${px(ih - dvh)}px / ${px(ih - pct)}px）</span>`);
-    say.push(Math.abs(hr.top) < 1 && Math.abs(hr.bottom - ih) < 1
-      ? `<span class="ok">✓ &lt;html&gt; 盒子正好是 0 → ${px(ih)}</span>：dvh 的外壳严丝合缝`
-      : `<span class="flag">⚠ &lt;html&gt; 盒子是 ${px(hr.top)} → ${px(hr.bottom)}，不是 0 → ${px(ih)}</span>：外壳偏了/溢出了，底部控件会被裁掉`);
+    say.push(Math.abs(dr.top) < 1 && Math.abs(dr.bottom - ih) < 1
+      ? `<span class="ok">✓ dvh 盒子正好是 0 → ${px(ih)}</span>：App 外壳严丝合缝，底部空白只可能来自 padding`
+      : `<span class="flag">⚠ dvh 盒子是 ${px(dr.top)} → ${px(dr.bottom)}，不是 0 → ${px(ih)}</span>：外壳本身就偏了`);
+    say.push('注意：下面「本页 &lt;html&gt; 盒子」是本页自己的 % 链（故意的对照组），不代表 App。App 的实际构建号和外壳尺寸请看 App 里「…」菜单顶部那行。');
     say.push(inset('top') === '0px'
       ? '<span class="flag">⚠ 顶部 inset = 0</span>：iOS 走 manifest 安装路径，状态栏不透明，内容是被系统往下顶的'
       : `✓ 顶部 inset = ${inset('top')}：状态栏是透明的，那条带子是灵动岛+状态栏的物理占位，必须留`);

@@ -95,6 +95,15 @@ const MODES: Array<{ id: string; label: string }> = [
   { id: 'bypassPermissions', label: '不再询问' },
 ];
 
+/** `index-<hash>.js` is Vite's content hash, so it identifies the build without a version file. */
+function buildInfo(): string {
+  const src = document.querySelector<HTMLScriptElement>('script[src*="assets/index-"]')?.src ?? '';
+  const build = /index-([A-Za-z0-9_-]+)\./.exec(src)?.[1] ?? 'dev';
+  const r = document.documentElement.getBoundingClientRect();
+  const fits = Math.abs(r.top) < 1 && Math.abs(r.bottom - window.innerHeight) < 1;
+  return `build ${build} · 外壳 ${Math.round(r.top)}→${Math.round(r.bottom)} / ${window.innerHeight}${fits ? ' ✓' : ' ⚠'}`;
+}
+
 export function MenuSheet({ meta, mode, onMode, onExport, onEnd, onDismiss }: {
   meta: string;
   mode?: string;
@@ -107,6 +116,10 @@ export function MenuSheet({ meta, mode, onMode, onExport, onEnd, onDismiss }: {
   return (
     <Sheet onDismiss={onDismiss}>
       <div className="menu-meta">{meta}</div>
+      {/* Which build this installed copy is actually running, and the shell's real box. A PWA can
+          sit on a stale service-worker cache for days, and diag.html cannot measure the app around
+          it — so without this "is the fix live on the phone?" is unanswerable. */}
+      <div className="menu-meta" style={{ opacity: .65 }}>{buildInfo()}</div>
       {modes ? (
         <>
           <div className="menu-label">权限模式</div>
