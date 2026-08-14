@@ -125,6 +125,11 @@ export function MenuSheet({ meta, mode, onMode, onExport, onEnd, onDismiss }: {
             <Gear size={18} />权限模式<span className="val">{MODES.find((m) => m.id === mode)?.label ?? mode ?? '—'}</span>
           </button>
           <button className="menu-row" onClick={() => { onExport(); onDismiss(); }}><Download size={18} />复制转录（Markdown）</button>
+          {/* An installed web app has no address bar, so this is the only way to reach the viewport
+              diagnostic on the device it is meant to diagnose. Same scope ⇒ stays standalone. */}
+          <button className="menu-row" onClick={() => { location.href = './diag.html'; }}>
+            <Info size={18} />视口诊断<span className="val">/diag.html</span>
+          </button>
           {/* Rename and archive need columns the sessions table does not have yet. */}
           <button className="menu-row" disabled style={{ opacity: .4 }}><Pencil size={18} />重命名会话<span className="val">下一版</span></button>
           <button className="menu-row" disabled style={{ opacity: .4 }}><Archive size={18} />归档<span className="val">下一版</span></button>

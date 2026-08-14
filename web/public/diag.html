@@ -41,6 +41,8 @@
   <p class="sub">从主屏幕图标打开（不是 Safari 标签页），然后把这一屏发我。左边三条竖线分别是 100vh（绿）/ 100dvh（黄）/ 100%（橙）——谁短谁就在撒谎。</p>
   <table id="out"></table>
   <button onclick="copy()">复制全部</button>
+  <!-- Standalone has no back button and no address bar; without this you are stuck here. -->
+  <button onclick="location.href='./'" style="background:none;color:#e5895f;border:1px solid rgba(245,244,239,.18)">返回 Claude Remote</button>
   <p class="legend">
     <b>display-mode</b> 是 standalone 才算真装成了 App。<br>
     <b>safe-area-inset-top</b> = 0 表示 iOS 没把状态栏做成透明的（走的是 manifest 安装路径），
