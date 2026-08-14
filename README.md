@@ -56,12 +56,14 @@ new version to refresh them.
 ```
 src/injector/
   ws-client.ts        WebKit inspector JSON-RPC over RFC6455 (ported from cc-injector)
-  attach.ts           spawn + free-port + wait-for-port + connect helpers
+  attach.ts           spawn + free-port + wait-for-port + connect + killTree (worker reaping)
   anchors.ts          ★ version-fragile: gate specs, locators, rebinds
   gate-rebind.ts      the injector core: parent + child gate rebinding
   extract-anchors.ts  offline tool: locate gates/aliases in the running bundle
 src/server/
-  store.ts            in-memory environments / work / sessions
+  store.ts            state: in-memory read cache + write-through to PG; runtime conn registry
+  db.ts               PostgreSQL layer (pool, schema, queries) — no ORM
+  schema.sql          environments / sessions / events DDL, applied idempotently on boot
   ws-ingress.ts       WS session_ingress server (legacy ≤2.1.193; unused on 2.1.231)
   index.ts            REST (environments/work/sessions) + CCR v2 SSE data-plane
 src/cli.ts            test driver: server + injector + observe the whole handshake
@@ -103,7 +105,8 @@ shape on the CCR v2 data-plane, both directions, with real examples, the tool-ca
 `npm test` runs the suite (no claude needed, ~4s): frame/secret encoding, server relay +
 worker-lifecycle endpoints, and fixture regression that pins the event shapes the web depends
 on (incl. the owner-vs-peer `client_platform` invariant). Real-wire fixtures live in
-`test/fixtures/`; refresh them with `npm run capture-events` (uses BYOK inference).
+`test/fixtures/`; refresh them with `npm run capture-events` (uses BYOK inference). Set
+`DATABASE_URL` to also run the persistence tests (otherwise they skip — see below).
 
 ## Hosted web (third version) — DONE
 
@@ -112,12 +115,16 @@ credential ⇒ the injector and the web see each other; it's a namespace key, st
 cookie (lost = re-issue).
 
 Run it:
+0. `npm install && npm run db:up` — start PostgreSQL (docker compose) and export
+   `DATABASE_URL=postgres://ccc:ccc@127.0.0.1:5432/ccc` (see `.env.example`).
 1. `npm run server` — central server on `:8787` (bridge control-plane + CCR v2 data-plane +
-   `/ws/client` web channel + serves `web/dist`).
+   `/ws/client` web channel + serves `web/dist`). Without `DATABASE_URL` it still runs, in
+   memory, and says so — nothing survives a restart.
 2. `cd web && npm install && npm run build` — build the mobile SPA once.
 3. `node src/control-cli.ts --credential <A> --server http://127.0.0.1:8787` (or an https
-   tunnel URL) — launches an injected `claude remote-control` whose bridge points at the
-   server, owned by `<A>`. Generates/prints/saves a credential if none is given.
+   tunnel URL) — launches an injected claude whose bridge points at the server, owned by `<A>`.
+   Generates/prints/saves a credential if none is given. Interactive by default (see below);
+   `--headless` gives the phone-only `claude remote-control` process instead.
 4. On your phone (LAN IP or a tunnel), open the server URL, paste the credential → your
    session appears → chat, with tool-use permission prompts. Desktop browsers get a
    "use your phone" guard.
@@ -132,10 +139,10 @@ Files: `src/server/main.ts` (process entry), `src/server/web-channel.ts` (browse
 
 ## Interactive `/rc` (fourth version) — DONE, verified
 
-The other entry point: a user is vibing in a normal `claude` TUI and, mid-session, wants it on
-their phone. `control-claude-code -i` launches the interactive TUI with the `/rc` gates rebound;
-the user types `/rc` (optionally `/rc <name>`) and the session appears on their phone — same web,
-same credential.
+The main entry point, and the **default** mode: a user is vibing in a normal `claude` TUI and,
+mid-session, wants it on their phone. `control-claude-code` launches the interactive TUI with the
+`/rc` gates rebound; the user types `/rc` (optionally `/rc <name>`) and the session appears on
+their phone — same web, same credential.
 
 Unlike headless, the REPL bridge spawns **no child**: the interactive process creates a
 code-session and connects the SSE data-plane itself. Two extra server endpoints back it:
@@ -154,11 +161,118 @@ blocker); and satisfy the transport init's OAuth check. A relayed web message is
 - `npm test` — the interactive control-plane (createCodeSession ownership + fetchRemoteCredentials
   + data-plane auth).
 
-Run: `node src/control-cli.ts -i --credential <A> --server http://127.0.0.1:8787`, then type
-`/rc` in the TUI. Injector logs go to `$TMPDIR/ccc-interactive.log`; `CCC_CLAUDE_DEBUG=1` also
-captures claude's own `--debug` output (to `~/.claude/debug/<uuid>.txt`).
+Run: `node src/control-cli.ts --credential <A> --server http://127.0.0.1:8787`, then type `/rc`
+in the TUI.
+
+### CLI contract
+
+```bash
+control-claude-code                            # interactive claude + /rc injection (default)
+control-claude-code --resume                   # ← any unknown arg is forwarded to claude
+control-claude-code -c --model opus "fix this"
+control-claude-code -- --help                  # everything after -- is claude's, verbatim
+control-claude-code --headless                 # old mode: injected `claude remote-control`
+```
+
+Controller-owned flags — `--server`, `--credential`, `--cwd`, `--claude-bin`, `--log-dir`,
+`--headless`, `-i/--interactive` (compat no-op), `-h/--help`. Every other token, in order, is
+claude's argv; `--` forces the rest through even if it collides with a controller flag name. A
+value flag with a missing/flag-looking value is a hard error rather than silently eating a claude
+argument. `test/control-cli.test.ts` pins this contract.
+
+Logs go to a directory, not the terminal (the TUI owns it): `~/.config/claude-code-controller/logs/`
+by default, `--log-dir` / `CCC_LOG_DIR` to move it. Each run writes `ccc-<stamp>-<pid>.log`
+(controller + injector) and `ccc-<stamp>-<pid>.claude.log` (claude's stderr — always captured, an
+unread stderr pipe would eventually stall claude), with `latest.log` / `latest.claude.log`
+symlinked for `tail -f`; the newest 20 runs are kept. If claude exits nonzero its stderr tail is
+echoed to the terminal so a bad forwarded argument stays visible. `CCC_CLAUDE_DEBUG=1` adds
+claude's own `--debug` (also to `~/.claude/debug/<uuid>.txt`).
+
+## Persistence — PostgreSQL (fifth version) — DONE, verified
+
+The server is meant to serve many users, so state lives in PostgreSQL. Three tables
+(`src/server/schema.sql`): `environments`, `sessions`, `events`. `credential` deliberately has no
+registry table yet — it is still a pure namespace key.
+
+```bash
+npm install && npm run db:up          # postgres:17 via docker compose (loopback-only :5432)
+export DATABASE_URL=postgres://ccc:ccc@127.0.0.1:5432/ccc
+npm run server                        # schema is applied idempotently on boot
+npm run db:psql                       # a shell in the database
+```
+
+**Design: in-memory read cache + write-through.** Since the server is single-instance, PG never
+has to coordinate between processes, so it only has to be the source of truth:
+
+| | |
+|---|---|
+| boot | `store.load()` pulls the last 30 days into `envs` / `sessions` maps |
+| reads | served from the maps — **synchronous** (`owns()` runs on every websocket frame) |
+| writes | memory + PG in the same call — the only methods that became `async` |
+| events | never cached; `historyFor()` is a query, `appendEvents()` a batched INSERT |
+
+That is why the migration touched ~8 call sites instead of ~73: `sessionsForCredential`,
+`sendToChild`, `sessionByIngressToken`, `view`, `nextWork` and friends never changed signature.
+
+**Deliberately not persisted**, because storing it would be wrong rather than merely wasteful:
+SSE response handles, `wsConnected` / `online` (a restart must report offline), the SSE `seq`, and
+the work queue (an in-flight lease is void after a restart — the injector re-registers). Plus
+`stream_event`: token-level deltas are relayed live but never stored, since the full `assistant`
+message already carries the text and storing them would multiply writes for no replay value.
+
+Two more consequences worth knowing:
+
+- **`last_activity` is batched.** `touch()` fires on every inbound event, so it only marks the
+  session dirty; a 30s timer (and `store.close()` on SIGINT/SIGTERM) does one `UPDATE … from
+  unnest(...)` for everything that accumulated.
+- **A live session reconnects itself across a restart.** `ingress_token` is persisted, so a
+  running claude's data-plane re-authenticates against the new process and the session goes back
+  to `active` on its own — no second `/rc`. (`e2e-persist` shows exactly this; kill the TUI too
+  and it correctly reports `offline` instead.)
+- **A cold session is recoverable, not lost.** Sessions older than the load window aren't in the
+  cache, but `POST /v1/code/sessions/{id}/bridge` recreates an unknown `cse_*` id under the
+  calling credential, so a returning TUI just re-signs its worker token.
+
+Without `DATABASE_URL` the server still runs, in memory, and says so — `new Store()` is the same
+single implementation with persistence switched off, which is what the unit tests and
+`src/cli.ts` use.
+
+Verified by:
+- `npm test` — with `DATABASE_URL`, `test/db.test.ts` runs write-through, restart-reload,
+  transcript ordering, the `stream_event` exclusion and the `last_activity` batching against the
+  real database. Without it those 6 tests skip and the suite stays zero-dependency (~4s).
+  Those tests TRUNCATE, so they get their own tables via `createPool(url, { schema: 'ccc_test' })`
+  (a per-connection `search_path`) — the same database as the server, never its `public` tables.
+  **Any new test that writes must use that schema**; pointed at `public` it would delete live
+  sessions.
+- `npm run e2e-persist` — the whole thing: inject → `/rc` → web message → real reply → stop the
+  server → **start a new process** → the transcript comes back from PG with claude gone.
+
+## Worker reaping (headless only)
+
+`claude remote-control` forks a **worker claude** (`--print --sdk-url …`) as a *grandchild*, so
+killing the process we spawned leaves the worker behind (PPID→1). Whether it then exits depends on
+something outside our control: with the server still up it notices and quits within ~12s, but if
+the server died first it retries the dead `--sdk-url` **forever**, holding ~370 MB at 0.4% CPU.
+Ten of those (7–18 hours old, 3.5 GB total) accumulated in one day of testing before this was
+found.
+
+`killTree()` in `attach.ts` fixes it: snapshot the process tree from `/proc` **before** anything
+dies (once an intermediate exits, its children re-parent to init and become unreachable), then
+signal deepest-first. Verified at 0.5s after SIGTERM/SIGINT, versus the old behaviour reproducing
+the orphan in the same window.
+
+Two things it deliberately does *not* do:
+- **No process groups.** The worker inherits the group it was spawned in — the *caller's* — so
+  `kill(-pid)` would take out the user's own shell or tmux window. `detached: true` would give the
+  child its own group, but it also moves the child out of the caller's group, which makes the
+  SIGKILL-the-host case (where no cleanup code runs at all) leak *more* reliably. Walking `/proc`
+  costs one scan and has neither problem.
+- **Interactive `/rc` is untouched.** That path must stay in the foreground process group to own
+  the terminal, and it spawns no worker, so it has no grandchild to leak.
 
 ## Next
 
-A real-phone LAN test (only tmux-automated so far), https cloud deploy, and account+password
-credential recovery.
+A real-phone LAN test (only tmux-automated so far), https cloud deploy, the compose `app`
+service, and a `credentials` table (registry + revocation + quota + account/password recovery),
+which is the natural next step now that there is a database.
