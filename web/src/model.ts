@@ -67,6 +67,13 @@ export type Item =
 
 export interface Live {
   busy: boolean;
+  /**
+   * Is the model reasoning *right now*? `busy` spans the whole turn — tool runs and prose
+   * included — so the activity line needs this narrower signal to decide whether the thinking
+   * glyph is honest. Set by thinking deltas and `system:thinking_tokens`, cleared the moment
+   * text or a tool call takes over.
+   */
+  thinking?: boolean;
   thinkingTokens?: number;
   /** The tool currently held open, for the activity line under the transcript. */
   running?: { name: string; arg: string; since: number };
@@ -251,9 +258,16 @@ function system(d: Draft, p: any): TranscriptState {
       if (Array.isArray(p.skills)) d.live.skills = p.skills.filter((c: unknown) => typeof c === 'string');
       return d;
     case 'thinking_tokens':
+      // The estimate only grows while the model reasons, so its arrival IS "thinking now".
+      d.live.thinking = true;
       if (typeof p.estimated_tokens === 'number') d.live.thinkingTokens = p.estimated_tokens;
       return d;
     case 'post_turn_summary':
+      // Named for when it is emitted: the turn is over. `result` normally says so, but it is not
+      // guaranteed to arrive (a dropped worker, a bridge that stops relaying), and a turn whose
+      // end is never announced would leave the activity line spinning for good. A later assistant
+      // message legitimately flips `busy` back on, so this is a floor, not a latch.
+      idle(d);
       if (typeof p.status_detail === 'string' && p.status_detail.trim()) push(d, { kind: 'status', text: p.status_detail.trim() });
       return d;
     case 'task_started': {
@@ -296,9 +310,13 @@ function assistant(d: Draft, p: any, ts: number | undefined, isHistory: boolean)
   if (!isHistory) d.live.busy = true;
   for (const b of content) {
     if (!b || typeof b !== 'object') continue;
+    // Blocks arrive in the order the model produced them, so the last one wins: a message that
+    // reasoned and then answered ends on `text` and the thinking glyph gives way.
     if (b.type === 'text') {
+      if (!isHistory) d.live.thinking = false;
       if (typeof b.text === 'string' && b.text.trim()) settleStreamed(d, 'prose', b.text);
     } else if (b.type === 'thinking') {
+      if (!isHistory) d.live.thinking = true;
       // Real transcripts carry `thinking: ""` — the data plane relays the signature only, never
       // the reasoning text. So a thinking block is a *marker* ("it thought, for N tokens"),
       // and only becomes expandable prose if a future version starts sending the text.
@@ -306,6 +324,7 @@ function assistant(d: Draft, p: any, ts: number | undefined, isHistory: boolean)
       if (text.trim()) settleStreamed(d, 'thinking', text, d.live.thinkingTokens);
       else markThinking(d, d.live.thinkingTokens);
     } else if (b.type === 'tool_use') {
+      if (!isHistory) d.live.thinking = false;
       if (isPushNotificationToolUse(b) || HIDDEN_TOOLS.has(b.name)) continue;
       if (b.name === QUESTION_TOOL) continue; // rendered as a question card from its permission request
       const toolUseId = String(b.id ?? '');
@@ -338,7 +357,8 @@ function user(d: Draft, p: any, ts: number | undefined, isHistory: boolean): Tra
   for (const text of taken.consumed) settleQueued(d, text);
   for (const text of taken.texts) {
     push(d, { kind: 'user', text, state: 'sent' });
-    if (!isHistory) d.live.busy = true;
+    // A fresh turn has not reasoned yet — whatever the previous one ended on must not carry over.
+    if (!isHistory) { d.live.busy = true; d.live.thinking = false; }
   }
   const content = p.message?.content;
   if (Array.isArray(content)) {
@@ -360,13 +380,22 @@ function user(d: Draft, p: any, ts: number | undefined, isHistory: boolean): Tra
   return d;
 }
 
-function result(d: Draft, p: any): TranscriptState {
+/**
+ * Drop the live "work is happening" flags — everything the activity line reads. Kept separate
+ * from the transcript cleanup below because `post_turn_summary` may stop the spinner but must
+ * never settle a tool card: only a real `tool_result` (or `result`) knows how a call ended.
+ */
+function idle(d: Draft): void {
   d.live.busy = false;
   d.live.running = undefined;
-  d.live.permission = undefined;
+  d.live.thinking = false;
   d.live.thinkingTokens = undefined;
-  const failed = p.subtype && p.subtype !== 'success';
-  // Nothing should still claim to be running once the turn is over.
+}
+
+/** Wind the turn down: nothing, live or rendered, may keep claiming to be in flight. */
+function endTurn(d: Draft, failed = false): void {
+  idle(d);
+  d.live.permission = undefined;
   for (let i = 0; i < d.items.length; i++) {
     const it = d.items[i];
     if (it.kind !== 'tools') continue;
@@ -378,6 +407,11 @@ function result(d: Draft, p: any): TranscriptState {
     if (it.kind === 'prose' && it.streaming) d.items[i] = { ...it, streaming: false };
     if (it.kind === 'thinking' && it.streaming) d.items[i] = { ...it, streaming: false };
   }
+}
+
+function result(d: Draft, p: any): TranscriptState {
+  const failed = p.subtype && p.subtype !== 'success';
+  endTurn(d, failed);
   if (failed) {
     push(d, { kind: 'error', title: String(p.subtype), detail: typeof p.result === 'string' ? p.result : undefined });
   }
@@ -414,8 +448,13 @@ function streamEvent(d: Draft, p: any, isHistory: boolean): TranscriptState {
   const t = e?.type;
   if (t === 'content_block_delta') {
     const delta = e.delta ?? {};
-    if (delta.type === 'text_delta' && typeof delta.text === 'string') appendStreamed(d, 'prose', delta.text);
-    else if (delta.type === 'thinking_delta' && typeof delta.thinking === 'string') appendStreamed(d, 'thinking', delta.thinking);
+    if (delta.type === 'text_delta' && typeof delta.text === 'string') {
+      appendStreamed(d, 'prose', delta.text);
+      if (!isHistory) d.live.thinking = false;
+    } else if (delta.type === 'thinking_delta' && typeof delta.thinking === 'string') {
+      appendStreamed(d, 'thinking', delta.thinking);
+      if (!isHistory) d.live.thinking = true;
+    }
     if (!isHistory) d.live.busy = true;
   } else if (t === 'message_stop') {
     for (let i = d.items.length - 1; i >= 0; i--) {
@@ -434,6 +473,7 @@ export function localSend(state: TranscriptState, text: string, queued: boolean)
   d.pendingWeb = d.pendingWeb.concat(text);
   push(d, { kind: 'user', text, state: queued ? 'queued' : 'sent' });
   d.live.busy = true;
+  d.live.thinking = false;
   return d;
 }
 
@@ -461,13 +501,16 @@ export function clearPermission(state: TranscriptState): TranscriptState {
  * Stop button and the activity line.
  *
  * Scanning backwards for the last turn boundary is the same rule the server folds into the session
- * digest (src/server/store.ts, foldDigest): `result` ends a turn, a user or assistant message
- * starts or continues one, everything else is neutral.
+ * digest (src/server/store.ts, foldDigest): `result` — or a `post_turn_summary`, which is emitted
+ * once the turn is over and covers the case where no `result` ever arrives — ends a turn, a user
+ * or assistant message starts or continues one, everything else is neutral.
  */
 export function turnActiveIn(payloads: unknown[]): boolean {
   for (let i = payloads.length - 1; i >= 0; i--) {
-    const t = (payloads[i] as any)?.type;
+    const p = payloads[i] as any;
+    const t = p?.type;
     if (t === 'result') return false;
+    if (t === 'system' && p?.subtype === 'post_turn_summary') return false;
     if (t === 'user' || t === 'assistant' || t === 'stream_event') return true;
   }
   return false;

@@ -452,6 +452,15 @@ export class Store {
     const d = s.digest;
     switch (payload.type) {
       case 'system': {
+        // A post-turn summary means the turn is over even when no `result` follows it — without
+        // this the row (and the phone's activity line, which seeds from it) stays "running".
+        if (payload.subtype === 'post_turn_summary') {
+          d.turnActive = false;
+          if (d.toolStatus === 'running') d.toolStatus = 'ok';
+          s.pendingTools.clear();
+          d.pendingApproval = false;
+          return;
+        }
         if (payload.subtype !== 'init') return;
         if (typeof payload.model === 'string') d.model = payload.model;
         if (typeof payload.permissionMode === 'string') d.mode = payload.permissionMode;

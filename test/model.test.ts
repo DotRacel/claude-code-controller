@@ -172,6 +172,58 @@ test('an interrupted turn leaves nothing claiming to run', () => {
   assert.ok(only(s, 'error').length === 1, 'a failed turn should surface, a successful one should not');
 });
 
+test('the thinking flag tracks reasoning only, not the whole turn', () => {
+  const live = { isHistory: false } as const;
+  let s = localSend(initialState(), '写个函数', false);
+  assert.equal(s.live.thinking, false, 'a fresh turn has not reasoned yet');
+
+  s = reduce(s, { type: 'system', subtype: 'thinking_tokens', estimated_tokens: 40 }, live);
+  assert.equal(s.live.thinking, true);
+  // Prose taking over ends the reasoning, even though the turn is still busy.
+  s = reduce(s, { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: '好的' } } }, live);
+  assert.equal(s.live.thinking, false);
+  assert.equal(s.live.busy, true, 'busy still spans the turn');
+
+  // So does a tool call, which is what the activity line reports instead.
+  s = reduce(s, { type: 'system', subtype: 'thinking_tokens', estimated_tokens: 80 }, live);
+  assert.equal(s.live.thinking, true);
+  s = reduce(s, { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } }] } }, live);
+  assert.equal(s.live.thinking, false);
+  assert.equal(s.live.running?.name, 'Bash');
+
+  s = reduce(s, { type: 'result', subtype: 'success', is_error: false }, live);
+  assert.equal(s.live.thinking, false);
+  assert.equal(s.live.busy, false);
+
+  // Blocks are ordered, so a message that reasoned and then answered ends on the answer.
+  let t = reduce(initialState(), { type: 'assistant', message: { role: 'assistant', content: [{ type: 'thinking', thinking: '' }, { type: 'text', text: '答案' }] } }, live);
+  assert.equal(t.live.thinking, false);
+  t = reduce(initialState(), { type: 'assistant', message: { role: 'assistant', content: [{ type: 'thinking', thinking: '' }] } }, live);
+  assert.equal(t.live.thinking, true, 'a message that only reasoned is still reasoning');
+});
+
+test('a post_turn_summary ends the turn when no result arrives', () => {
+  const live = { isHistory: false } as const;
+  let s = localSend(initialState(), '跑测试', false);
+  s = reduce(s, { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'npm test' } }] } }, live);
+  assert.equal(s.live.busy, true);
+
+  s = reduce(s, { type: 'system', subtype: 'post_turn_summary', status_detail: '跑完了测试' }, live);
+  assert.equal(s.live.busy, false, 'the activity line must stop without a result');
+  assert.equal(s.live.running, undefined);
+  // But it knows nothing about how the call ended, so the card is left alone for a real result.
+  assert.equal(only(s, 'tools')[0].calls[0].status, 'running');
+  assert.deepEqual(only(s, 'status').map((i) => i.text), ['跑完了测试']);
+
+  // Not a latch: the next assistant message is a live turn again.
+  s = reduce(s, { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: '继续' }] } }, live);
+  assert.equal(s.live.busy, true);
+
+  // The backfill rule agrees with the reducer.
+  assert.equal(turnActiveIn([{ type: 'assistant' }, { type: 'system', subtype: 'post_turn_summary' }]), false);
+  assert.equal(turnActiveIn([{ type: 'system', subtype: 'post_turn_summary' }, { type: 'assistant' }]), true);
+});
+
 test('a successful turn leaves no marker at all', () => {
   let s = initialState();
   s = reduce(s, { type: 'result', subtype: 'success', is_error: false }, { isHistory: false });

@@ -270,6 +270,10 @@ textarea { font: inherit; }
 .dot.on { background: var(--ok); }
 .dot.off { background: var(--muted); }
 .dot.run { background: var(--accent); }
+/* "work is happening, but it isn't reasoning" — the activity line's alternative to the thinking
+   glyph. Breathing rather than spinning, so it never reads as the CLI's thinking animation. */
+.dot.pulse { animation: cc-pulse 1.4s ease-in-out infinite; }
+@keyframes cc-pulse { 0%, 100% { opacity: 1 } 50% { opacity: .3 } }
 
 /* ── chips ── */
 .chips { flex: none; display: flex; gap: 8px; padding: 0 20px 8px; }
@@ -583,7 +587,7 @@ textarea { font: inherit; }
   .enter, .sheet, .backdrop, .to-bottom { animation-duration: 80ms; animation-timing-function: linear; }
   .sheet { animation-name: cc-fade; }
   .to-bottom { animation-name: cc-fade; }
-  .caret, .spinner { animation: none; }
+  .caret, .spinner, .dot.pulse { animation: none; }
   .send { transition: none; }
   .tool-row.press { transform: none; }
 }

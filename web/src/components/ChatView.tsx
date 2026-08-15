@@ -146,7 +146,7 @@ export function ChatView({ session, sock, connection, onBack, registerEvent, reg
 
   const stop = () => {
     sock.control(session.id, 'interrupt');
-    setState((prev) => ({ ...prev, live: { ...prev.live, busy: false, running: undefined } }));
+    setState((prev) => ({ ...prev, live: { ...prev.live, busy: false, running: undefined, thinking: false } }));
   };
 
   const toBottom = () => {
@@ -188,7 +188,11 @@ export function ChatView({ session, sock, connection, onBack, registerEvent, reg
         {state.items.map((it, i) => (
           <ItemView key={it.id} it={it} isLast={i === state.items.length - 1} h={handlers} />
         ))}
-        {busy && <ActivityLine running={state.live.running} />}
+        {/* Offline, nothing is running here to report — a spinner would just keep promising work
+            that no connected claude is doing. */}
+        {busy && !offline && (
+          <ActivityLine running={state.live.running} thinking={state.live.thinking} tokens={state.live.thinkingTokens} />
+        )}
       </div>
 
       <p className="sr-only" role="status" aria-live="polite">{announce}</p>
@@ -227,7 +231,16 @@ export function ChatView({ session, sock, connection, onBack, registerEvent, reg
   );
 }
 
-function ActivityLine({ running }: { running?: { name: string; arg: string; since: number } }) {
+/**
+ * One line under the transcript for as long as the agent holds the turn. The leading glyph is
+ * chosen by what the agent is *actually* doing, not merely by `busy`: the thinking star is the
+ * CLI's reasoning animation and would be a lie while a tool runs or prose streams in.
+ */
+function ActivityLine({ running, thinking, tokens }: {
+  running?: { name: string; arg: string; since: number };
+  thinking?: boolean;
+  tokens?: number;
+}) {
   const [, tick] = useState(0);
   useEffect(() => {
     if (!running) return;
@@ -235,15 +248,28 @@ function ActivityLine({ running }: { running?: { name: string; arg: string; sinc
     return () => clearInterval(t);
   }, [running?.since]);
 
-  // With no tool open the spinner is the whole line: the animation says "still working", so there
-  // is no wording left to go stale.
-  let text = '';
   if (running) {
     const s = Math.max(0, Math.round((Date.now() - running.since) / 1000));
     const dur = s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
-    text = `${toolDisplayName(running.name)}${running.arg ? ` · ${running.arg.split('\n')[0].slice(0, 40)}` : ''} · ${dur}`;
+    const arg = running.arg ? ` · ${running.arg.split('\n')[0].slice(0, 40)}` : '';
+    return (
+      <div className="activity">
+        <span className="dot run pulse" aria-hidden="true" />
+        {`${toolDisplayName(running.name)}${arg} · ${dur}`}
+      </div>
+    );
   }
-  return <div className="activity"><ThinkingSpinner />{text}</div>;
+  if (thinking) {
+    return (
+      <div className="activity">
+        <ThinkingSpinner />
+        {tokens ? `思考中 · ${tokens} tokens` : '思考中'}
+      </div>
+    );
+  }
+  // Working, but neither reasoning nor inside a tool — streaming prose, or between steps. A quiet
+  // pulse says "still going" without claiming which.
+  return <div className="activity"><span className="dot run pulse" aria-hidden="true" />运行中</div>;
 }
 
 /** The CLI's own thinking glyph: it grows to a full star and shrinks back, one frame at a time. */
