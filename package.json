@@ -1,16 +1,28 @@
 {
-  "name": "claude-code-controller",
+  "name": "control-claude-code",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "Revive Claude Code Remote Control for BYOK users by injecting the Bun-compiled binary via inspector and re-hosting the /remote-control control-plane on a self-run server.",
+  "keywords": ["claude", "claude-code", "remote-control", "cli"],
+  "repository": { "type": "git", "url": "git+https://github.com/DotRacel/claude-code-controller.git" },
+  "homepage": "https://github.com/DotRacel/claude-code-controller#readme",
+  "bugs": "https://github.com/DotRacel/claude-code-controller/issues",
   "engines": {
     "node": ">=22"
   },
   "bin": {
-    "control-claude-code": "src/control-cli.ts"
+    "control-claude-code": "dist/cli.mjs"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "scripts": {
+    "build": "node scripts/build.mjs",
+    "prepublishOnly": "npm run build",
     "server": "node src/server/main.ts",
     "control": "node src/control-cli.ts",
     "control-headless": "node src/control-cli.ts --headless",
@@ -29,10 +41,9 @@
     "ui-preview": "node test/ui-preview.ts",
     "ui-shot": "node test/ui-shot.ts"
   },
-  "dependencies": {
-    "pg": "^8.23.0"
-  },
   "devDependencies": {
-    "@types/pg": "^8.21.0"
+    "@types/pg": "^8.21.0",
+    "esbuild": "^0.25.0",
+    "pg": "^8.23.0"
   }
 }
