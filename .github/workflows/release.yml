@@ -31,7 +31,17 @@ jobs:
         run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
 
       # `prepublishOnly` runs the esbuild bundle; `files` limits the tarball to dist/.
-      - run: npm publish
+      #
+      # A prerelease must not become the default install. npm publishes to the `latest` dist-tag
+      # unless told otherwise, so a v0.1.0-beta.0 tag would hand the beta to every `npx
+      # control-claude-code` user. Any tag carrying a hyphen goes to the `beta` channel instead,
+      # reachable only via an explicit @beta — matching the `latest` docker tag rule above.
+      - name: Publish
+        run: |
+          case "$GITHUB_REF_NAME" in
+            *-*) npm publish --tag beta ;;
+            *)   npm publish ;;
+          esac
 
   # The server half — the CLI's counterpart, for anyone self-hosting rather than using the hosted
   # backend. Independent of the npm job: neither blocks the other.
