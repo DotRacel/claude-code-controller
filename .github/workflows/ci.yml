@@ -56,30 +56,5 @@ jobs:
       - run: npm run build # tsc --noEmit + vite build
         working-directory: web
 
-  # Build the server image without pushing. Everything that broke while this Dockerfile was written
-  # — a missing dependency layer, an npm install silently skipped under NODE_ENV=production — was
-  # invisible until something actually built and ran it. Single platform: this is a smoke test, the
-  # multi-arch build happens on release.
-  docker:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: false
-          load: true
-          tags: ccc:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-      # A built image that dies on boot still counts as broken — check it serves the SPA.
-      - name: Boot the image and probe it
-        run: |
-          docker run -d --name ccc-ci -p 8787:8787 ccc:ci
-          for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8787/ >/dev/null; then echo "server is up"; exit 0; fi
-            sleep 1
-          done
-          echo "server did not come up in 30s"; docker logs ccc-ci; exit 1
+# The server image is not built here: it is built, probed and pushed on tag, in release.yml.
 

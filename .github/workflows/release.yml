@@ -64,6 +64,29 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
 
+      # Build amd64 on its own first and actually run it. build-push-action only proves the image
+      # BUILDS: the NODE_ENV bug that made npm skip the pg install produced a perfectly green build
+      # and a container that died on boot with ERR_MODULE_NOT_FOUND. Probing before the push is
+      # what keeps a broken image off ghcr — nothing else in this pipeline would catch it.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: ccc:probe
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Boot the image and probe it
+        run: |
+          docker run -d --name ccc-probe -p 8787:8787 ccc:probe
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8787/ >/dev/null; then echo "server is up"; exit 0; fi
+            sleep 1
+          done
+          echo "server did not come up in 30s"; docker logs ccc-probe; exit 1
+
+      # Only now push, and for both architectures. The amd64 layers come straight out of the cache
+      # the probe build just wrote, so this leg mostly costs the emulated arm64 build.
       - uses: docker/build-push-action@v6
         with:
           context: .
