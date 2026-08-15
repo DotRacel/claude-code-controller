@@ -1,0 +1,16 @@
+# Host node_modules carry platform-specific binaries (esbuild, rollup) that must not leak into the
+# image — both stages install their own.
+node_modules
+web/node_modules
+dist
+web/dist
+
+.git
+.github
+artifacts
+test
+docs
+*.log
+.env
+.env.*
+!.env.example

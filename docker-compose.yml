@@ -1,7 +1,26 @@
-# Local dev + (later) deployment. Right now only the database: the server still runs on the
-# host via `npm run server`, so the port is published. When the `app` service lands, the two
-# talk over the compose network and `ports` here can go away.
+# Self-hosting the controller: `INVITE_CODE=<码> docker compose up -d` brings up the server and its
+# database. The CLI half ships on npm instead (`npx control-claude-code`), and most people will
+# never run this — it is for anyone who would rather not point at the hosted backend.
+#
+# The db port stays published because `npm run server` on the host is still the dev loop; the app
+# service reaches the database over the compose network and does not need it.
 services:
+  app:
+    # Published image. `docker compose up --build` builds from this repo instead.
+    image: ghcr.io/dotracel/claude-code-controller:latest
+    build: .
+    container_name: ccc-app
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://ccc:ccc@db:5432/ccc
+      # Without an invite code registration is closed, so a fresh server nobody can sign up to.
+      INVITE_CODE: ${INVITE_CODE:-}
+    ports:
+      - '8787:8787' # NOT loopback-only: the phone reaches this over the LAN
+    depends_on:
+      db:
+        condition: service_healthy
+
   db:
     image: postgres:17-alpine
     container_name: ccc-pg
