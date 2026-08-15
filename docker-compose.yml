@@ -7,7 +7,7 @@
 services:
   app:
     # Published image. `docker compose up --build` builds from this repo instead.
-    image: ghcr.io/dotracel/claude-code-controller:latest
+    image: ghcr.io/dotracel/control-claude-code:latest
     build: .
     container_name: ccc-app
     restart: unless-stopped

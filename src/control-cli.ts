@@ -11,7 +11,7 @@
  *   - PASSTHROUGH: any argument we don't own is forwarded to claude verbatim (`--resume`, `-c`,
  *     `--model`, a prompt, …). `--` forces everything after it through, including `--help`.
  *   - FILE LOGS: injector + claude stderr go to a log directory (default
- *     ~/.config/claude-code-controller/logs), not the terminal — the TUI owns the terminal.
+ *     ~/.config/control-claude-code/logs), not the terminal — the TUI owns the terminal.
  *   - TITLE PARITY: we rename our own process to `claude` so automatic-rename terminals
  *     (tmux, screen) title the window the way a direct `claude` run does. See
  *     alignProcessTitle().

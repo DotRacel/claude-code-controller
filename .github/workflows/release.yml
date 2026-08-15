@@ -68,7 +68,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           # Hardcoded lowercase: ghcr.io rejects uppercase, and github.repository is `DotRacel/…`.
-          images: ghcr.io/dotracel/claude-code-controller
+          images: ghcr.io/dotracel/control-claude-code
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}

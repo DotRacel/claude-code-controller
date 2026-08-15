@@ -131,7 +131,7 @@ Run it:
 4. `node src/control-cli.ts` — first run opens a small TUI: pick a backend (the default is the
    hosted `https://ccc.racel.dev`, so a self-hosted server is 「添加新后端…」 once), then log in
    with the same account (or paste its
-   token). The answer is saved to `~/.config/claude-code-controller/config.json` (0600) and
+   token). The answer is saved to `~/.config/control-claude-code/config.json` (0600) and
    later runs skip straight to launching claude; `--login` reopens it to switch backend or
    account. Interactive by default (see below); `--headless` gives the phone-only
    `claude remote-control` process instead.
@@ -191,14 +191,14 @@ order, is claude's argv; `--` forces the rest through even if it collides with a
 name. A value flag with a missing/flag-looking value is a hard error rather than silently eating a
 claude argument. `test/control-cli.test.ts` pins this contract.
 
-Backend + account live in `~/.config/claude-code-controller/config.json` (0600, one entry per
+Backend + account live in `~/.config/control-claude-code/config.json` (0600, one entry per
 backend). The TUI (`src/tui.ts`, `src/cli-auth.ts`) only appears when it has to: no saved token,
 `--login`, or a token the server has rejected. A server that is merely *unreachable* does not
 trigger it — the saved token is still the best answer we have, and demanding a password every
 time the LAN is out of reach would be wrong. `--credential` / `CCC_CREDENTIAL` skips it outright.
 Both prompts degrade to plain numbered lines when stdin is not a TTY, so scripts can drive them.
 
-Logs go to a directory, not the terminal (the TUI owns it): `~/.config/claude-code-controller/logs/`
+Logs go to a directory, not the terminal (the TUI owns it): `~/.config/control-claude-code/logs/`
 by default, `--log-dir` / `CCC_LOG_DIR` to move it. Each run writes `ccc-<stamp>-<pid>.log`
 (controller + injector) and `ccc-<stamp>-<pid>.claude.log` (claude's stderr — always captured, an
 unread stderr pipe would eventually stall claude), with `latest.log` / `latest.claude.log`

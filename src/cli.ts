@@ -1,5 +1,5 @@
 /**
- * cli.ts — test driver for claude-code-controller.
+ * cli.ts — test driver for control-claude-code.
  *
  *   handshake (v1): start server → launch injected `claude remote-control` → gates rebound
  *   → environment registered → session work → child spawned → child gate rebound → child

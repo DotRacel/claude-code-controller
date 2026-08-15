@@ -30,7 +30,7 @@ register (username + password + invite code), and you are talking to the same se
 tool-use permission prompts, an output sheet, and the transcript.
 
 First run asks which backend to use and logs you in; the answer lands in
-`~/.config/claude-code-controller/config.json` and later runs go straight to claude. The default
+`~/.config/control-claude-code/config.json` and later runs go straight to claude. The default
 backend is `https://ccc.racel.dev`; `--login` reopens the picker to switch backend or account.
 
 Anything the controller does not recognise is forwarded to claude verbatim:
@@ -51,7 +51,7 @@ INVITE_CODE=<码> docker compose up -d
 ```
 
 That brings up the server on `:8787` with PostgreSQL behind it. The image is published at
-`ghcr.io/dotracel/claude-code-controller`. Without `INVITE_CODE` registration stays closed, which
+`ghcr.io/dotracel/control-claude-code`. Without `INVITE_CODE` registration stays closed, which
 on a fresh server means nobody can sign up at all. Point the CLI at it with
 `control-claude --login`.
 

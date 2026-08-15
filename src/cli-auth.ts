@@ -9,7 +9,7 @@
  * whole story — a token belongs to a specific backend, and the same machine may talk to more
  * than one (the shared LAN server, a laptop running its own).
  *
- *   ~/.config/claude-code-controller/config.json  (0600)
+ *   ~/.config/control-claude-code/config.json  (0600)
  *   { "current": "http://…", "backends": [{ "url": "http://…", "token": "ccc_…", "username": "…" }] }
  */
 import fs from 'node:fs';
@@ -17,7 +17,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { select, input, note, fail, heading, closePrompts, Cancelled } from './tui.ts';
 
-export const CONFIG_DIR = path.join(os.homedir(), '.config', 'claude-code-controller');
+export const CONFIG_DIR = path.join(os.homedir(), '.config', 'control-claude-code');
 export const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 /** Pre-2.0 layout: a bare, self-generated credential. Useless under account auth. */
 export const LEGACY_CREDENTIAL_FILE = path.join(CONFIG_DIR, 'credential');
