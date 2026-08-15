@@ -146,12 +146,12 @@ Run it:
   session list → message → streamed reply → `can_use_tool` permission → tool executes.
 
 Files: `src/server/main.ts` (process entry), `src/server/web-channel.ts` (browser WS),
-`src/control-cli.ts` (`control-claude-code`), `web/` (Vite + React SPA).
+`src/control-cli.ts` (`control-claude`), `web/` (Vite + React SPA).
 
 ## Interactive `/rc` (fourth version) — DONE, verified
 
 The main entry point, and the **default** mode: a user is vibing in a normal `claude` TUI and,
-mid-session, wants it on their phone. `control-claude-code` launches the interactive TUI with the
+mid-session, wants it on their phone. `control-claude` launches the interactive TUI with the
 `/rc` gates rebound; the user types `/rc` (optionally `/rc <name>`) and the session appears on
 their phone — same web, same credential.
 
@@ -177,12 +177,12 @@ Run: `node src/control-cli.ts` (log in on first run), then type `/rc` in the TUI
 ### CLI contract
 
 ```bash
-control-claude-code                            # interactive claude + /rc injection (default)
-control-claude-code --login                    # pick a backend / log in again
-control-claude-code --resume                   # ← any unknown arg is forwarded to claude
-control-claude-code -c --model opus "fix this"
-control-claude-code -- --help                  # everything after -- is claude's, verbatim
-control-claude-code --headless                 # old mode: injected `claude remote-control`
+control-claude                            # interactive claude + /rc injection (default)
+control-claude --login                    # pick a backend / log in again
+control-claude --resume                   # ← any unknown arg is forwarded to claude
+control-claude -c --model opus "fix this"
+control-claude -- --help                  # everything after -- is claude's, verbatim
+control-claude --headless                 # old mode: injected `claude remote-control`
 ```
 
 Controller-owned flags — `--login`, `--server`, `--credential`, `--cwd`, `--claude-bin`,

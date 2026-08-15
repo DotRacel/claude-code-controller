@@ -16,12 +16,13 @@ Requires Node ≥ 22 and `claude` ≥ 2.1.229. Linux and macOS.
 npm i -g control-claude-code@beta     # or: npx control-claude-code@beta
 ```
 
-Only prereleases are published so far, hence `@beta`.
+Only prereleases are published so far, hence `@beta`. The package is `control-claude-code`; the
+command it installs is `control-claude`.
 
 ## Use
 
 ```bash
-control-claude-code       # launches the normal claude TUI, with /rc enabled
+control-claude       # launches the normal claude TUI, with /rc enabled
 ```
 
 Then type **`/rc`** in the TUI and the session shows up on your phone. Open the server URL there,
@@ -35,10 +36,10 @@ backend is `https://ccc.racel.dev`; `--login` reopens the picker to switch backe
 Anything the controller does not recognise is forwarded to claude verbatim:
 
 ```bash
-control-claude-code --resume
-control-claude-code -c --model opus "fix this bug"
-control-claude-code -- --help          # everything after -- is claude's
-control-claude-code --headless         # phone-only, no TUI
+control-claude --resume
+control-claude -c --model opus "fix this bug"
+control-claude -- --help          # everything after -- is claude's
+control-claude --headless         # phone-only, no TUI
 ```
 
 ## Self-hosting the server (optional)
@@ -52,7 +53,7 @@ INVITE_CODE=<码> docker compose up -d
 That brings up the server on `:8787` with PostgreSQL behind it. The image is published at
 `ghcr.io/dotracel/claude-code-controller`. Without `INVITE_CODE` registration stays closed, which
 on a fresh server means nobody can sign up at all. Point the CLI at it with
-`control-claude-code --login`.
+`control-claude --login`.
 
 ## Docs
 

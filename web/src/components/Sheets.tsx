@@ -165,7 +165,7 @@ export function HelpSheet({ onDismiss }: { onDismiss: () => void }) {
             <li>
               <b>用同一个账号登录</b>
               <p>第一次运行会让你选服务器（填你现在打开的这个地址），再用手机上这个账号登录。答案存在 <code>~/.config/claude-code-controller/config.json</code>，之后直接启动；<code>--login</code> 可以换服务器或账号。</p>
-              <Cmd text="control-claude-code" />
+              <Cmd text="control-claude" />
             </li>
             <li>
               <b>在 TUI 里输入 /rc</b>

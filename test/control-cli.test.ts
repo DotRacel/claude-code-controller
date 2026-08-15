@@ -1,5 +1,5 @@
 /**
- * control-cli.test.ts — the CLI contract of `control-claude-code`: interactive by default and
+ * control-cli.test.ts — the CLI contract of `control-claude`: interactive by default and
  * every unknown argument forwarded to claude verbatim (order preserved).
  * Run: node --test test/control-cli.test.ts
  */

@@ -1,5 +1,5 @@
 /**
- * cli-auth.ts — which server control-claude-code talks to, and as whom.
+ * cli-auth.ts — which server control-claude talks to, and as whom.
  *
  * A credential (凭证A) is now an account's server-issued token, so the CLI can no longer just
  * generate one: it has to log in and be given one. This file owns the config file that

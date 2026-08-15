@@ -6,7 +6,7 @@
  * list is accurate without subscribing to every transcript.
  *
  * The design's "New session" button is deliberately not here: a phone cannot start claude on
- * your machine — `control-claude-code` is launched from your terminal — so the ? button explains
+ * your machine — `control-claude` is launched from your terminal — so the ? button explains
  * how instead of offering a button that could not work.
  */
 import { useEffect, useState } from 'react';

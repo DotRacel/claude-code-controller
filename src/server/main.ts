@@ -66,7 +66,7 @@ async function main() {
   if (process.env.INVITE_CODE) console.log(`${ts()} registration OPEN — invite code is set (${process.env.INVITE_CODE.length} chars)`);
   else console.log(`${ts()} ⚠️  INVITE_CODE not set — registration is CLOSED. Start with: INVITE_CODE=<码> node src/server/main.ts`);
   if (!pool && !process.env.DATABASE_URL) console.log(`${ts()} ⚠️  accounts are in memory too — every registration is lost on restart`);
-  console.log(`${ts()} clients connect with: control-claude-code --server http://<this-host>:${PORT}  (then log in), or the web app`);
+  console.log(`${ts()} clients connect with: control-claude --server http://<this-host>:${PORT}  (then log in), or the web app`);
 
   // Flush the batched last_activity bumps and close the pool instead of dropping them.
   let stopping = false;

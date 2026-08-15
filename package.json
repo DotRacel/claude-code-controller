@@ -20,7 +20,7 @@
     "node": ">=22"
   },
   "bin": {
-    "control-claude-code": "dist/cli.mjs"
+    "control-claude": "dist/cli.mjs"
   },
   "files": [
     "dist"

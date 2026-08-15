@@ -1,6 +1,6 @@
 #!/usr/bin/env -S node
 /**
- * control-cli.ts — `control-claude-code`: launch a gate-rebound `claude` whose bridge
+ * control-cli.ts — `control-claude`: launch a gate-rebound `claude` whose bridge
  * (control-plane + data-plane) points at the user's own server, owned by their credential
  * (凭证A).
  *
@@ -17,9 +17,9 @@
  *     alignProcessTitle().
  *
  * Usage:
- *   control-claude-code [--server <url>] [--credential <A>] [--cwd <dir>]
- *                       [--claude-bin <path>] [--log-dir <dir>] [--headless]
- *                       [claude args...] [-- claude args...]
+ *   control-claude [--server <url>] [--credential <A>] [--cwd <dir>]
+ *                  [--claude-bin <path>] [--log-dir <dir>] [--headless]
+ *                  [claude args...] [-- claude args...]
  *   env: CCC_SERVER, CCC_CREDENTIAL, CCC_LOG_DIR, CLAUDE_BIN, CCC_VERBOSE, CCC_CLAUDE_DEBUG,
  *        CCC_NO_PROCESS_TITLE
  */
@@ -80,7 +80,7 @@ export function alignProcessTitle(title: string = PROCESS_TITLE): string {
 }
 
 function die(msg: string): never {
-  console.error(`control-claude-code: ${msg}\n试试 control-claude-code --help`);
+  console.error(`control-claude: ${msg}\n试试 control-claude --help`);
   process.exit(2);
 }
 
@@ -124,17 +124,17 @@ export function parseArgs(argv: string[]): Cli {
 }
 
 function printHelp() {
-  console.log(`control-claude-code — 用手机远程控制本机的 claude（BYOK 也能用）
+  console.log(`control-claude — 用手机远程控制本机的 claude（BYOK 也能用）
 
 用法:
-  control-claude-code [控制器选项] [claude 的参数...]
+  control-claude [控制器选项] [claude 的参数...]
 
 默认启动交互式 claude（真实 TUI）并注入远程控制；在 TUI 里输入 \x1b[1m/rc\x1b[0m 会话即出现在手机上。
 控制器不认识的参数会原样转发给 claude:
-  control-claude-code --resume                  # 选一个历史会话继续
-  control-claude-code -c                        # 继续最近一次会话
-  control-claude-code --model opus "修下这个 bug"
-  control-claude-code -- --help                 # -- 之后的一切都交给 claude（包括 --help）
+  control-claude --resume                  # 选一个历史会话继续
+  control-claude -c                        # 继续最近一次会话
+  control-claude --model opus "修下这个 bug"
+  control-claude -- --help                 # -- 之后的一切都交给 claude（包括 --help）
 
 首次运行会让你选后端并登录（账号在 web 端注册，需要邀请码），结果保存在
 ${CONFIG_FILE}，之后直接启动。随时可用 \x1b[1m--login\x1b[0m 重新登录或切换后端。
@@ -340,7 +340,7 @@ async function runInteractive(o: RunCtx) {
  */
 async function runHeadless(o: RunCtx) {
   const { logger } = o;
-  console.log(`${ts()} control-claude-code (headless) → ${o.serverUrl}  cred=${o.credential.slice(0, 10)}…  cwd=${o.cwd}`);
+  console.log(`${ts()} control-claude (headless) → ${o.serverUrl}  cred=${o.credential.slice(0, 10)}…  cwd=${o.cwd}`);
   if (o.claudeArgs.length) console.log(`${ts()} 转发给 claude remote-control 的参数: ${o.claudeArgs.join(' ')}`);
   console.log(`${ts()} 日志: ${logger.file}`);
 
@@ -380,7 +380,7 @@ export function withDebugFlag(args: string[]): string[] {
 /**
  * Whether we were run as the CLI rather than imported (the arg parsing above is imported by
  * tests). argv[1] must be realpath'd first: an npm-installed bin is a symlink, so argv[1] is
- * `…/bin/control-claude-code` while import.meta.url is the resolved `…/dist/cli.mjs`. Comparing
+ * `…/bin/control-claude` while import.meta.url is the resolved `…/dist/cli.mjs`. Comparing
  * them unresolved makes an installed copy exit silently without ever calling main().
  */
 function invokedAsCli(): boolean {

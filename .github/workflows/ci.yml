@@ -32,8 +32,8 @@ jobs:
       # way an installed bin is invoked. --help must print and exit 0.
       - name: Smoke-test the bundled CLI
         run: |
-          ln -s "$PWD/dist/cli.mjs" /tmp/control-claude-code
-          /tmp/control-claude-code --help
+          ln -s "$PWD/dist/cli.mjs" /tmp/control-claude
+          /tmp/control-claude --help
 
   web:
     runs-on: ubuntu-latest

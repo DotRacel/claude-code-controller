@@ -47,7 +47,7 @@ batched UPDATE as `last_activity`. An in-flight approval is deliberately not res
 request died with the process, so the badge must not come back stuck on.
 
 Deliberately not built, because the architecture has no channel for it: starting a session from the
-phone (only your terminal can launch `control-claude-code`), reading/writing the machine's
+phone (only your terminal can launch `control-claude`), reading/writing the machine's
 permission allowlist, the `@`-file picker, "open in editor", voice, and image upload. Web Push
 lock-screen approval is deferred — notifications today are local and need the page alive.
 
@@ -56,7 +56,7 @@ feature), archive (both the chip and the ⋯ row — it needed a column the `ses
 have, and a filter that can only ever be empty is not a filter), and the Markdown transcript
 export. What used to be the home screen's dashed "要开一个新会话？" card is now the **?** button
 next to it — a sheet with the three commands (`npm i -g control-claude-code` →
-`control-claude-code` → `/rc`), each copyable, because that answer is instructions, not a hint.
+`control-claude` → `/rc`), each copyable, because that answer is instructions, not a hint.
 The logout control is a door-with-arrow icon (a gear promised settings this screen does not have)
 and asks twice before it forgets the key.
 

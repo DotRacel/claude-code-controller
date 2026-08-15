@@ -1,5 +1,5 @@
 /**
- * tui.ts — the terminal prompts control-claude-code uses to pick a backend and log in.
+ * tui.ts — the terminal prompts control-claude uses to pick a backend and log in.
  *
  * Hand-rolled against raw stdin and ANSI, for the same reason the websocket framing in
  * web-channel.ts is hand-rolled: this project carries one runtime dependency (pg), and an
