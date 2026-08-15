@@ -15,6 +15,7 @@
   },
   "homepage": "https://github.com/DotRacel/claude-code-controller#readme",
   "bugs": "https://github.com/DotRacel/claude-code-controller/issues",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "engines": {
     "node": ">=22"
   },

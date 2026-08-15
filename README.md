@@ -72,3 +72,9 @@ cd web && npm install && npm run build
 
 The CLI ships as one dependency-free `dist/cli.mjs` (`npm run build`); the server ships as the
 container image. Tags drive releases: `npm version …` then `git push --follow-tags`.
+
+## License
+
+[PolyForm Noncommercial 1.0.0](LICENSE). Use it, change it, share it — for personal use, study
+and research. Commercial use is not granted, and that includes use inside a company. `claude`
+itself is Anthropic's, and this is a client for their product.
