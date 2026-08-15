@@ -329,7 +329,6 @@ async function runInteractive(o: RunCtx) {
     console.error(`${ts()} 完整日志: ${logger.file}${hasContent(logger.claudeFile) ? ' / ' + logger.claudeFile : ''}`);
     process.exit(code);
   }
-  console.log(`\n${ts()} claude 已退出。`);
   process.exit(0);
 }
 
