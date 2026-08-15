@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The matrix is the point: 22.x is the floor in `engines` and in the esbuild target, and it is
+  # the version that would break if anything reintroduced a dependency on Node's default type
+  # stripping. Developing on 24 hides that class of bug entirely.
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.x', '24.x']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      # Smoke-test the published shape, not the source tree: run the bundle through a symlink the
+      # way an installed bin is invoked. --help must print and exit 0.
+      - name: Smoke-test the bundled CLI
+        run: |
+          ln -s "$PWD/dist/cli.mjs" /tmp/control-claude-code
+          /tmp/control-claude-code --help
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.x'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+      # The root workspace has to be installed too: the web type check reaches into ../src (ws.ts
+      # type-imports store.ts → db.ts → pg) and module resolution for those files starts at the
+      # repo root, not inside web/. This is the one place the full type graph is checked — the
+      # Docker build deliberately runs `vite build` alone.
+      - run: npm ci
+      - run: npm ci
+        working-directory: web
+      - run: npm run build # tsc --noEmit + vite build
+        working-directory: web
+
+  # Build the server image without pushing. Everything that broke while this Dockerfile was written
+  # — a missing dependency layer, an npm install silently skipped under NODE_ENV=production — was
+  # invisible until something actually built and ran it. Single platform: this is a smoke test, the
+  # multi-arch build happens on release.
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ccc:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      # A built image that dies on boot still counts as broken — check it serves the SPA.
+      - name: Boot the image and probe it
+        run: |
+          docker run -d --name ccc-ci -p 8787:8787 ccc:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8787/ >/dev/null; then echo "server is up"; exit 0; fi
+            sleep 1
+          done
+          echo "server did not come up in 30s"; docker logs ccc-ci; exit 1
+

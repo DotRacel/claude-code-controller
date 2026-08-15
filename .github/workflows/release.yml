@@ -1,0 +1,75 @@
+name: Release
+
+# Tag-driven: `npm version patch && git push --follow-tags` is the whole release ritual.
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  npm:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC — trusted publishing + provenance, so no NPM_TOKEN lives in this repo
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.x'
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      # Trusted publishing needs a recent npm; the one bundled with Node may lag behind.
+      - run: npm install -g npm@latest
+
+      - run: npm ci
+      - run: npm test
+
+      # The tag is the source of truth for the version — package.json is written to match, not the
+      # other way round, so a tag can never publish a mismatched version.
+      - name: Sync version from tag
+        run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
+
+      # `prepublishOnly` runs the esbuild bundle; `files` limits the tarball to dist/.
+      - run: npm publish
+
+  # The server half — the CLI's counterpart, for anyone self-hosting rather than using the hosted
+  # backend. Independent of the npm job: neither blocks the other.
+  docker:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # push to ghcr.io
+    steps:
+      - uses: actions/checkout@v4
+
+      # QEMU is only here for the arm64 build (self-hosters on a Pi or an ARM VPS). It emulates,
+      # so that leg is slow — drop linux/arm64 below if the wait stops being worth it.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }} # no PAT needed; packages: write covers it
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          # Hardcoded lowercase: ghcr.io rejects uppercase, and github.repository is `DotRacel/…`.
+          images: ghcr.io/dotracel/claude-code-controller
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
