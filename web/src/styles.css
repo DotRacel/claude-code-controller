@@ -309,20 +309,32 @@ textarea { font: inherit; }
 .chat > *, .session-list > * { flex: none; }
 .bubble-user {
   align-self: stretch; background: var(--bubble); border-radius: var(--radius-bubble);
-  padding: 14px 16px; font: 400 16px/1.4 var(--sans); white-space: pre-wrap; overflow-wrap: anywhere;
+  padding: 14px 16px; font: 400 16px/1.4 var(--sans); white-space: pre-wrap; word-break: break-all;
 }
 /* Waiting on the agent to take the turn — grey italic, the same shape the CLI uses for a queued
    line. It settles to normal text when the worker echoes the turn back (model.ts, settleQueued). */
 .bubble-user.queued { color: var(--text-3); font-style: italic; }
 
-/* assistant prose: no avatar, no bubble (0b) */
-.prose { font: 400 17.5px/1.5 var(--serif); color: var(--text); overflow-wrap: anywhere; }
+/* assistant prose: no avatar, no bubble (0b)
+
+   Lines break mid-word rather than at word boundaries. `overflow-wrap: anywhere` — what this used
+   to be — only splits a word that cannot fit a line ON ITS OWN; every word that merely fails to
+   fit the REMAINDER of a line still jumps whole to the next one. In a 390px column at 17.5px
+   serif a line holds roughly twenty characters, so one twelve-letter identifier jumping leaves
+   half a line of ragged white space, over and over down the transcript. `break-all` fills each
+   line to the edge instead. The cost is real and deliberate: English words split with no hyphen
+   ("implementa|tion"). The command and output blocks (.perm-cmd, .out-body) have always broken
+   this way; this makes prose match rather than sit beside them looking sparse.
+
+   `word-break` inherits, so this covers everything under .md — paragraphs, list items, headings,
+   inline code, link text. Code blocks opt back out below. */
+.prose { font: 400 17.5px/1.5 var(--serif); color: var(--text); word-break: break-all; }
 .caret { display: inline-block; width: 2px; height: 16px; background: var(--accent); vertical-align: -3px; margin-left: 2px; animation: cc-caret 1s steps(1) infinite; }
 @keyframes cc-caret { 0%, 49% { opacity: 1 } 50%, 100% { opacity: 0 } }
 
 .thinking { border-left: 2px solid var(--line-2); padding-left: 12px; }
 .thinking-head { display: flex; align-items: center; gap: 7px; font: 400 12.5px/1.4 var(--mono); color: var(--muted); }
-.thinking-body { margin-top: 8px; font: 400 15px/1.55 var(--serif); color: var(--text-3); white-space: pre-wrap; overflow-wrap: anywhere; }
+.thinking-body { margin-top: 8px; font: 400 15px/1.55 var(--serif); color: var(--text-3); white-space: pre-wrap; word-break: break-all; }
 
 /* ── tool cards: adjacent cards merge into one bordered group (0b) ── */
 .tool-group { border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--raised); overflow: hidden; }
@@ -333,7 +345,7 @@ textarea { font: inherit; }
 .tool-row:active { background: #313130; }
 .tool-row.press { transform: scale(.98); }
 /* a command's long unbroken tokens (a URL, a DSN) must break: mono never scrolls sideways (0a) */
-.tool-head { padding: 10px 12px; font: 600 13.5px/1.45 var(--sans); overflow-wrap: anywhere; }
+.tool-head { padding: 10px 12px; font: 600 13.5px/1.45 var(--sans); word-break: break-all; }
 .tool-head .arg { font: 400 12.5px/1.45 var(--mono); color: var(--text-3); }
 .tool-head .arg .dim { color: var(--muted); }
 .tool-result-line { padding: 9px 12px; border-top: 1px solid var(--line); font: 400 12.5px/1.4 var(--mono); color: var(--muted); }
@@ -389,7 +401,7 @@ textarea { font: inherit; }
 .qopt.on { border-color: var(--text); background: rgba(245, 244, 239, .06); }
 .qopt .l { font: 600 14px/1.3 var(--sans); }
 .qopt .d { margin-top: 4px; font: 400 12px/1.45 var(--sans); color: var(--muted); }
-.qopt .p { margin-top: 8px; padding: 9px 10px; border-radius: 8px; background: var(--output); font: 400 12.5px/1.6 var(--mono); color: var(--text-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+.qopt .p { margin-top: 8px; padding: 9px 10px; border-radius: 8px; background: var(--output); font: 400 12.5px/1.6 var(--mono); color: var(--text-2); white-space: pre-wrap; word-break: break-all; }
 .qother { width: 100%; margin-top: 8px; padding: 11px 12px; background: var(--output); border: 1px solid var(--line-2); border-radius: 12px; color: var(--text); font: 400 14px/1.4 var(--sans); }
 .qother:focus { outline: none; border-color: var(--accent); }
 .qactions { display: flex; gap: 9px; padding: 0 13px 13px; }
@@ -518,7 +530,7 @@ textarea { font: inherit; }
 }
 .help-steps b { display: block; font: 600 15px/1.35 var(--sans); color: var(--text); }
 .help-steps p { margin: 5px 0 0; font: 400 13px/1.65 var(--sans); color: var(--text-3); }
-.help-steps code { font: 400 12px/1.5 var(--mono); color: var(--text-2); background: rgba(245, 244, 239, .07); border-radius: 5px; padding: 1px 5px; overflow-wrap: anywhere; }
+.help-steps code { font: 400 12px/1.5 var(--mono); color: var(--text-2); background: rgba(245, 244, 239, .07); border-radius: 5px; padding: 1px 5px; word-break: break-all; }
 /* a command must never wrap into something you would paste wrong — it scrolls instead (0a),
    and because a scroller cannot be text-selected on a phone, it carries its own copy button */
 .help-cmd {
@@ -551,11 +563,14 @@ textarea { font: inherit; }
 .md blockquote { margin: 0 0 10px; padding-left: 12px; border-left: 2px solid var(--line-2); color: var(--text-3); }
 .md code {
   font: 400 .82em/1.5 var(--mono); background: rgba(245, 244, 239, .07);
-  border-radius: 5px; padding: 1px 5px; overflow-wrap: anywhere;
+  border-radius: 5px; padding: 1px 5px; word-break: break-all;
 }
-/* code blocks are the one place horizontal scroll is allowed (0a) */
+/* code blocks are the one place horizontal scroll is allowed (0a) — and the one place the prose
+   `break-all` must not reach. `white-space: pre` already suppresses it (nothing wraps, so there is
+   nothing to break), but the reset is written out so a later change to the wrapping mode cannot
+   silently start chopping code mid-identifier. */
 .md-pre { margin: 0 0 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--output); display: flex; flex-direction: column; }
-.md-pre pre { margin: 0; min-width: 0; padding: 0 12px 11px; overflow-x: auto; font: 400 12.5px/1.75 var(--mono); color: var(--text-2); }
+.md-pre pre { margin: 0; min-width: 0; padding: 0 12px 11px; overflow-x: auto; font: 400 12.5px/1.75 var(--mono); color: var(--text-2); word-break: normal; }
 .md-pre code { background: none; padding: 0; font-size: 12.5px; }
 /* the copy button gets its own row rather than floating: over a horizontally scrolling block it
    covered whatever happened to be at the right edge of the first line. */
