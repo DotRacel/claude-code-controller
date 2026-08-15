@@ -22,8 +22,11 @@ export const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 /** Pre-2.0 layout: a bare, self-generated credential. Useless under account auth. */
 export const LEGACY_CREDENTIAL_FILE = path.join(CONFIG_DIR, 'credential');
 
-/** The backend a fresh install points at: a controller server on this machine. */
-export const DEFAULT_BACKEND = 'http://127.0.0.1:8787';
+/**
+ * The backend a fresh install points at: the hosted controller. Self-hosters pick
+ * 「添加新后端…」 once and their server is remembered in the config from then on.
+ */
+export const DEFAULT_BACKEND = 'https://ccc.racel.dev';
 
 export interface Backend {
   url: string;
@@ -35,11 +38,30 @@ export interface CliConfig {
   backends: Backend[];
 }
 
-/** Trailing slashes and a missing scheme are the two ways a hand-typed URL fails to match. */
+/**
+ * Which scheme to assume for an address typed without one. A routable hostname is behind TLS
+ * essentially always; an IP literal, `localhost`, a bare hostname, or an mDNS `.local` name is a
+ * box on the LAN that almost never has a certificate. Guessing https for the first group is what
+ * makes `ccc.racel.dev` work when typed bare.
+ */
+function schemeFor(authority: string): 'http' | 'https' {
+  const host = authority.split('/')[0].replace(/:\d+$/, '').toLowerCase();
+  if (host.startsWith('[')) return 'http'; // [::1], [fe80::1] — an IPv6 literal is a LAN address
+  if (host === 'localhost' || host.endsWith('.localhost')) return 'http';
+  if (/^\d+(\.\d+){3}$/.test(host)) return 'http'; // IPv4
+  if (!host.includes('.')) return 'http'; // bare hostname, e.g. `nas:8787`
+  if (host.endsWith('.local')) return 'http'; // mDNS
+  return 'https';
+}
+
+/**
+ * Trailing slashes and a missing scheme are the two ways a hand-typed URL fails to match.
+ * An explicit scheme is always honoured — we only guess when the user left it out.
+ */
 export function normalizeUrl(raw: string): string {
   const s = raw.trim().replace(/\/+$/, '');
   if (!s) return s;
-  return /^https?:\/\//i.test(s) ? s : `http://${s}`;
+  return /^https?:\/\//i.test(s) ? s : `${schemeFor(s)}://${s}`;
 }
 
 export function loadConfig(): CliConfig {
@@ -190,7 +212,7 @@ async function chooseBackend(config: CliConfig): Promise<string> {
   return await input('后端地址', {
     validate: (v) => {
       const url = normalizeUrl(v);
-      if (!url) return '请输入地址，例如 http://192.168.1.10:8787';
+      if (!url) return '请输入地址，例如 ccc.racel.dev 或 192.168.1.10:8787（协议可省略）';
       try { new URL(url); } catch { return '地址格式不对'; }
       return undefined;
     },

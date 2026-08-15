@@ -6,6 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseArgs, withDebugFlag, alignProcessTitle } from '../src/control-cli.ts';
+import { normalizeUrl } from '../src/cli-auth.ts';
 
 test('interactive is the default; --headless opts out; -i stays accepted', () => {
   assert.equal(parseArgs([]).headless, false);
@@ -77,4 +78,29 @@ test('withDebugFlag only adds --debug under CCC_CLAUDE_DEBUG, and never twice', 
     if (prev === undefined) delete process.env.CCC_CLAUDE_DEBUG;
     else process.env.CCC_CLAUDE_DEBUG = prev;
   }
+});
+
+test('an explicitly typed scheme is never rewritten', () => {
+  assert.equal(normalizeUrl('http://ccc.racel.dev'), 'http://ccc.racel.dev');
+  assert.equal(normalizeUrl('https://192.168.1.10:8787'), 'https://192.168.1.10:8787');
+  assert.equal(normalizeUrl('HTTP://ccc.racel.dev'), 'HTTP://ccc.racel.dev');
+  assert.equal(normalizeUrl('  https://ccc.racel.dev/  '), 'https://ccc.racel.dev');
+});
+
+test('a bare hostname gets https; anything that smells like the LAN gets http', () => {
+  assert.equal(normalizeUrl('ccc.racel.dev'), 'https://ccc.racel.dev');
+  assert.equal(normalizeUrl('ccc.racel.dev:8443'), 'https://ccc.racel.dev:8443');
+  assert.equal(normalizeUrl('ccc.racel.dev/'), 'https://ccc.racel.dev');
+
+  assert.equal(normalizeUrl('localhost:8787'), 'http://localhost:8787');
+  assert.equal(normalizeUrl('192.168.1.10:8787'), 'http://192.168.1.10:8787');
+  assert.equal(normalizeUrl('127.0.0.1'), 'http://127.0.0.1');
+  assert.equal(normalizeUrl('[::1]:8787'), 'http://[::1]:8787');
+  assert.equal(normalizeUrl('nas:8787'), 'http://nas:8787'); // no dot — a LAN box, not a domain
+  assert.equal(normalizeUrl('mac.local:8787'), 'http://mac.local:8787'); // mDNS
+});
+
+test('normalizeUrl leaves empty input alone (the caller treats it as "not answered")', () => {
+  assert.equal(normalizeUrl(''), '');
+  assert.equal(normalizeUrl('   '), '');
 });
