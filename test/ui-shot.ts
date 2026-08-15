@@ -270,8 +270,22 @@ async function main() {
         await sleep(500);
       },
     },
-    { name: '09-auth-gate', noCredential: true },
-    { name: '10-auth-gate-register', noCredential: true, setup: async (c) => {
+    {
+      name: '09-help-sheet',
+      setup: async (c) => {
+        await c.eval(`document.querySelector('[aria-label="帮助"]').click()`);
+        await sleep(500);
+      },
+    },
+    {
+      name: '10-logout-confirm',
+      setup: async (c) => {
+        await c.eval(`document.querySelector('[aria-label="退出登录"]').click()`);
+        await sleep(500);
+      },
+    },
+    { name: '11-auth-gate', noCredential: true },
+    { name: '12-auth-gate-register', noCredential: true, setup: async (c) => {
       await c.eval(`[...document.querySelectorAll('.auth-tabs button')].find(b => b.textContent === '注册')?.click()`);
       await sleep(300);
     } },

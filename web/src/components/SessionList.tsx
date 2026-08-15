@@ -6,16 +6,17 @@
  * list is accurate without subscribing to every transcript.
  *
  * The design's "New session" button is deliberately not here: a phone cannot start claude on
- * your machine — `control-claude-code` is launched from your terminal — so the slot explains
+ * your machine — `control-claude-code` is launched from your terminal — so the ? button explains
  * how instead of offering a button that could not work.
  */
 import { useEffect, useState } from 'react';
 import type { SessionView } from '../ws.ts';
 import { toolDisplayName } from '../tools.ts';
-import { Lock, Check, Gear, Search } from '../icons.tsx';
+import { Lock, Check, Help, SignOut } from '../icons.tsx';
+import { HelpSheet, ConfirmSheet } from './Sheets.tsx';
 import { notifyPermission, requestNotifyPermission } from '../notify.ts';
 
-type Filter = 'active' | 'all' | 'archived';
+type Filter = 'active' | 'all';
 
 function relTime(ts: number): string {
   const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
@@ -39,6 +40,8 @@ export function SessionList({ sessions, connection, onOpen, onLogout }: {
 }) {
   const [filter, setFilter] = useState<Filter>('active');
   const [perm, setPerm] = useState(notifyPermission());
+  const [help, setHelp] = useState(false);
+  const [confirmLogout, setConfirmLogout] = useState(false);
   const [, tick] = useState(0);
 
   // Keep "2m 14s" honest while a tool runs.
@@ -56,14 +59,14 @@ export function SessionList({ sessions, connection, onOpen, onLogout }: {
       <div className="topbar-lg">
         <h1>会话</h1>
         <div style={{ display: 'flex', gap: 10 }}>
-          <button className="icon-btn" aria-label="搜索" disabled style={{ opacity: .35 }}><Search size={17} /></button>
-          <button className="icon-btn" aria-label="退出" onClick={onLogout}><Gear size={17} /></button>
+          <button className="icon-btn" aria-label="帮助" onClick={() => setHelp(true)}><Help size={17} /></button>
+          <button className="icon-btn" aria-label="退出登录" onClick={() => setConfirmLogout(true)}><SignOut size={17} /></button>
         </div>
       </div>
       <div className="chips">
-        {(['active', 'all', 'archived'] as Filter[]).map((f) => (
+        {(['active', 'all'] as Filter[]).map((f) => (
           <button key={f} className={`chip${filter === f ? ' on' : ''}`} onClick={() => setFilter(f)}>
-            {f === 'active' ? '活跃' : f === 'all' ? '全部' : '已归档'}
+            {f === 'active' ? '活跃' : '全部'}
           </button>
         ))}
       </div>
@@ -74,24 +77,24 @@ export function SessionList({ sessions, connection, onOpen, onLogout }: {
       )}
       <div className="scroll">
         <div className="session-list">
-          {filter === 'archived' && (
-            <div className="empty">归档要给 sessions 表加一列，留到下一版。</div>
-          )}
-          {filter !== 'archived' && shown.length === 0 && (
+          {shown.length === 0 && (
             <div className="empty">
-              {connection === 'online' ? '还没有会话。' : '正在连接…'}
+              {connection === 'online' ? '还没有会话。点右上角的 ? 看怎么开一个。' : '正在连接…'}
             </div>
           )}
           {shown.map((s) => <SessionCard key={s.id} s={s} onOpen={onOpen} />)}
-          {filter !== 'archived' && (
-            <div className="hint-card">
-              <b>要开一个新会话？</b><br />
-              在电脑上跑 <code>control-claude-code</code>，然后在 TUI 里输入 <code>/rc</code>，它就会出现在这里。
-              手机不能替你在机器上拉起 claude。
-            </div>
-          )}
         </div>
       </div>
+      {help && <HelpSheet onDismiss={() => setHelp(false)} />}
+      {confirmLogout && (
+        <ConfirmSheet
+          title="退出登录？"
+          body="这台设备会忘掉密钥，下次要重新登录。电脑上的会话不受影响，继续跑。"
+          confirmLabel="退出登录"
+          onConfirm={onLogout}
+          onDismiss={() => setConfirmLogout(false)}
+        />
+      )}
     </div>
   );
 }

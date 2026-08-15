@@ -8,7 +8,7 @@
  *
  * Run: node test/ui-preview.ts [--port 8791] [--username preview]
  *      then open http://127.0.0.1:8791 and paste the printed token into the gate's
- *      「用 token 直接连接」. The token is issued by the server (accounts are real now), so it
+ *      「使用密钥连接」. The token is issued by the server (accounts are real now), so it
  *      is printed on startup rather than being a name chosen here.
  */
 import fs from 'node:fs';

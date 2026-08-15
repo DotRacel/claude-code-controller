@@ -215,6 +215,15 @@ phone (only your terminal can launch `control-claude-code`), reading/writing the
 permission allowlist, the `@`-file picker, "open in editor", voice, and image upload. Web Push
 lock-screen approval is deferred — notifications today are local and need the page alive.
 
+Also deliberately **removed**, rather than shipped disabled: search (a dead grey button promised a
+feature), archive (both the chip and the ⋯ row — it needed a column the `sessions` table does not
+have, and a filter that can only ever be empty is not a filter), and the Markdown transcript
+export. What used to be the home screen's dashed "要开一个新会话？" card is now the **?** button
+next to it — a sheet with the three commands (`npm i -g control-claude-code` →
+`control-claude-code` → `/rc`), each copyable, because that answer is instructions, not a hint.
+The logout control is a door-with-arrow icon (a gear promised settings this screen does not have)
+and asks twice before it forgets the key.
+
 Verified by: `npm test` (76 tests, ~4s — reducer invariants against real captured shapes in
 `test/fixtures/transcript-shapes.jsonl`, permission pass-through and digest derivation over a real
 socket, digest persistence across a restart), `npm run e2e-interactive`, `npm run e2e-question`,

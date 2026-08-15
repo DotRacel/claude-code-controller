@@ -35,7 +35,7 @@ export function AuthGate({ onAuthed }: { onAuthed: (a: Account) => void }) {
         const t = token.trim();
         const check = await checkToken(t);
         if (check.status === 'ok') onAuthed({ token: t, username: check.username });
-        else setError(check.status === 'rejected' ? '这个 token 无效或已失效' : '连不上服务器，检查网络后重试');
+        else setError(check.status === 'rejected' ? '这个密钥无效或已失效' : '连不上服务器，检查网络后重试');
       } else if (mode === 'login') {
         onAuthed(await login(username.trim(), password));
       } else {
@@ -65,7 +65,7 @@ export function AuthGate({ onAuthed }: { onAuthed: (a: Account) => void }) {
 
         {mode === 'token' ? (
           <>
-            <p>粘贴账号 token 直接连接。</p>
+            <p>粘贴账号密钥直接连接。</p>
             <input className="cred-input" placeholder="ccc_…" value={token} autoFocus
               onChange={(e) => setToken(e.target.value)}
               autoCapitalize="off" autoCorrect="off" spellCheck={false} />
@@ -93,10 +93,10 @@ export function AuthGate({ onAuthed }: { onAuthed: (a: Account) => void }) {
         </button>
 
         <button type="button" className="auth-alt" onClick={() => switchTo(mode === 'token' ? 'login' : 'token')}>
-          {mode === 'token' ? '用账号密码登录' : '用 token 直接连接'}
+          {mode === 'token' ? '用账号密码登录' : '使用密钥连接'}
         </button>
 
-        <p>{mode === 'register' ? '注册需要邀请码，向服务器管理员索取。' : '登录状态保存在本机 cookie。'}</p>
+        {mode === 'register' && <p>注册需要邀请码，向服务器管理员索取。</p>}
       </form>
     </div>
   );

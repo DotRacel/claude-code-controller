@@ -1,5 +1,6 @@
 /**
- * Sheets.tsx — the three modal surfaces: permission (1d), raw tool output (1e), session ⋯ (1h).
+ * Sheets.tsx — the modal surfaces: permission (1d), raw tool output (1e), session ⋯ (1h),
+ * plus the home screen's help and confirm sheets.
  */
 import { useState } from 'react';
 import { Sheet } from './Sheet.tsx';
@@ -7,7 +8,7 @@ import type { PermissionRequest, ToolCall } from '../model.ts';
 import type { PermissionAnswer } from '../ws.ts';
 import { toolDisplayName, toolArg, durationLabel } from '../tools.ts';
 import { haptic } from '../haptics.ts';
-import { Lock, Copy, Info, Gear, Pencil, Download, Archive } from '../icons.tsx';
+import { Lock, Copy, Info, Gear, Pencil } from '../icons.tsx';
 
 /** The worker's own suggestion, phrased as a button. Only ever what it offered — the phone
  * never invents a rule, and it cannot reach the machine's settings.json. */
@@ -95,11 +96,10 @@ const MODES: Array<{ id: string; label: string }> = [
   { id: 'bypassPermissions', label: '不再询问' },
 ];
 
-export function MenuSheet({ meta, mode, onMode, onExport, onEnd, onDismiss }: {
+export function MenuSheet({ meta, mode, onMode, onEnd, onDismiss }: {
   meta: string;
   mode?: string;
   onMode: (m: string) => void;
-  onExport: () => void;
   onEnd: () => void;
   onDismiss: () => void;
 }) {
@@ -124,15 +124,89 @@ export function MenuSheet({ meta, mode, onMode, onExport, onEnd, onDismiss }: {
           <button className="menu-row" onClick={() => setModes(true)}>
             <Gear size={18} />权限模式<span className="val">{MODES.find((m) => m.id === mode)?.label ?? mode ?? '—'}</span>
           </button>
-          <button className="menu-row" onClick={() => { onExport(); onDismiss(); }}><Download size={18} />复制转录（Markdown）</button>
-          {/* Rename and archive need columns the sessions table does not have yet. */}
+          {/* Rename needs a column the sessions table does not have yet. */}
           <button className="menu-row" disabled style={{ opacity: .4 }}><Pencil size={18} />重命名会话<span className="val">下一版</span></button>
-          <button className="menu-row" disabled style={{ opacity: .4 }}><Archive size={18} />归档<span className="val">下一版</span></button>
           <button className="menu-row danger" onClick={() => { haptic('medium'); onEnd(); onDismiss(); }}>
             <span style={{ width: 15, height: 15, borderRadius: 3, background: 'var(--danger)', display: 'block' }} />停止当前回合
           </button>
         </div>
       )}
+    </Sheet>
+  );
+}
+
+/** A command block. It scrolls rather than wraps (a wrapped command gets pasted wrong), which on
+ * a phone makes selecting it by hand hopeless — hence the copy button rather than a bare block. */
+function Cmd({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(text); setCopied(true); haptic('light'); setTimeout(() => setCopied(false), 1500); } catch { /* denied */ }
+  };
+  return (
+    <div className="help-cmd">
+      <button className="md-copy" onClick={copy}>{copied ? '已复制' : '复制'}</button>
+      <pre>{text}</pre>
+    </div>
+  );
+}
+
+/**
+ * HelpSheet — what used to be the home screen's dashed "要开一个新会话？" card, now behind the
+ * ? button and long enough to actually be instructions: a phone cannot start claude on your
+ * machine, so the only useful answer is how to install and run the thing that can.
+ */
+export function HelpSheet({ onDismiss }: { onDismiss: () => void }) {
+  return (
+    <Sheet onDismiss={onDismiss} height="82%">
+      <div className="menu-meta">把电脑上的 claude 接到手机</div>
+      <div className="sheet-scroll">
+        <div className="sheet-pad">
+          <ol className="help-steps">
+            <li>
+              <b>在电脑上装好本项目</b>
+              <p>需要 Node ≥ 22 和已经能用的 <code>claude</code>。</p>
+              <Cmd text="npm i -g control-claude-code" />
+            </li>
+            <li>
+              <b>用同一个账号登录</b>
+              <p>第一次运行会让你选服务器（填你现在打开的这个地址），再用手机上这个账号登录。答案存在 <code>~/.config/claude-code-controller/config.json</code>，之后直接启动；<code>--login</code> 可以换服务器或账号。</p>
+              <Cmd text="control-claude-code" />
+            </li>
+            <li>
+              <b>在 TUI 里输入 /rc</b>
+              <p>会话立刻出现在这个列表里，之后的对话和工具审批都会推到手机上。</p>
+              <Cmd text={'/rc\n/rc <会话名>'} />
+            </li>
+          </ol>
+          <p className="help-note">
+            手机不能替你在机器上拉起 claude —— 会话必须从终端开始。终端关掉后会话显示离线，转录仍然留着。
+          </p>
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
+/** A destructive action asked twice. Dismissing (drag, backdrop, Esc) is always the "no". */
+export function ConfirmSheet({ title, body, confirmLabel, onConfirm, onDismiss }: {
+  title: string;
+  body?: string;
+  confirmLabel: string;
+  onConfirm: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <Sheet onDismiss={onDismiss}>
+      <div className="sheet-pad">
+        <div className="confirm-head">
+          <div className="t1">{title}</div>
+          {body && <div className="t2">{body}</div>}
+        </div>
+        <div className="perm-actions">
+          <button className="btn tall danger" onClick={() => { haptic('medium'); onConfirm(); }}>{confirmLabel}</button>
+          <button className="btn tall" onClick={onDismiss}>取消</button>
+        </div>
+      </div>
     </Sheet>
   );
 }

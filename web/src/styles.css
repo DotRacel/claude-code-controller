@@ -295,9 +295,6 @@ textarea { font: inherit; }
 .badge-approval { display: flex; align-items: center; gap: 6px; padding: 4px 9px; border-radius: 11px; background: var(--tint-accent); color: var(--accent-soft); font: 600 11px/1 var(--sans); flex: none; }
 
 .empty { padding: 48px 24px; text-align: center; color: var(--text-3); font-size: 13.5px; line-height: 1.7; }
-.hint-card { border: 1px dashed var(--line-2); border-radius: 14px; padding: 16px; color: var(--text-3); font-size: 13px; line-height: 1.7; }
-.hint-card b { color: var(--text); font-weight: 600; }
-.hint-card code { display: inline-block; font-family: var(--mono); font-size: 12.5px; color: var(--text-2); background: rgba(245, 244, 239, .06); border-radius: 6px; padding: 2px 6px; margin-top: 6px; }
 .notify-banner { width: 100%; border-bottom: 1px solid var(--line); background: rgba(245, 244, 239, .04); color: var(--text-2); padding: 11px 14px; font-size: 13.5px; text-align: center; }
 
 /* ── transcript ── */
@@ -509,6 +506,35 @@ textarea { font: inherit; }
 .menu-row.danger { color: var(--danger); }
 .menu-row .val { margin-left: auto; font: 400 13.5px/1 var(--mono); color: var(--muted); }
 .menu-label { padding: 14px var(--gutter) 8px; font: 600 11px/1 var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+
+/* the ? sheet: numbered steps, each with the command it is about */
+.help-steps { list-style: none; counter-reset: step; margin: 0; padding: 0; }
+.help-steps li { counter-increment: step; position: relative; padding: 0 0 20px 34px; }
+.help-steps li::before {
+  content: counter(step); position: absolute; left: 0; top: 0;
+  width: 22px; height: 22px; border-radius: 11px; border: 1px solid var(--line-3);
+  display: flex; align-items: center; justify-content: center;
+  font: 600 12px/1 var(--sans); color: var(--text-2);
+}
+.help-steps b { display: block; font: 600 15px/1.35 var(--sans); color: var(--text); }
+.help-steps p { margin: 5px 0 0; font: 400 13px/1.65 var(--sans); color: var(--text-3); }
+.help-steps code { font: 400 12px/1.5 var(--mono); color: var(--text-2); background: rgba(245, 244, 239, .07); border-radius: 5px; padding: 1px 5px; overflow-wrap: anywhere; }
+/* a command must never wrap into something you would paste wrong — it scrolls instead (0a),
+   and because a scroller cannot be text-selected on a phone, it carries its own copy button */
+.help-cmd {
+  margin-top: 9px; border-radius: 10px; background: var(--output); border: 1px solid var(--line);
+  display: flex; flex-direction: column;
+}
+.help-cmd pre {
+  margin: 0; min-width: 0; padding: 0 12px 10px; overflow-x: auto;
+  font: 400 12.5px/1.7 var(--mono); color: var(--text-2);
+}
+.help-note { margin: 2px 0 10px; font: 400 12.5px/1.7 var(--sans); color: var(--muted); }
+
+/* confirm (log out): the question, then the two answers at permission-sheet size */
+.confirm-head { padding: 2px 4px 18px; }
+.confirm-head .t1 { font: 700 17px/1.3 var(--sans); }
+.confirm-head .t2 { margin-top: 7px; font: 400 13px/1.6 var(--sans); color: var(--text-3); }
 
 /* ── markdown inside assistant prose ── */
 .md > :first-child { margin-top: 0; }

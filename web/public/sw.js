@@ -1,6 +1,6 @@
 /* Claude Remote shell worker. Never intercepts /v1 or /ws. */
 // Bump on every deploy that must not be served from an old cache.
-const CACHE = 'ccc-web-v6';
+const CACHE = 'ccc-web-v7';
 const PRECACHE = [
   './',
   './index.html',

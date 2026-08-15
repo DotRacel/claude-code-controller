@@ -12,7 +12,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ControlSocket, SessionView, Connection, PermissionAnswer } from '../ws.ts';
-import { reduce, initialState, localSend, markQuestionAnswered, clearPermission, turnActiveIn, type TranscriptState, type ToolCall, type Item } from '../model.ts';
+import { reduce, initialState, localSend, markQuestionAnswered, clearPermission, turnActiveIn, type TranscriptState, type ToolCall } from '../model.ts';
 import { ItemView, type TranscriptHandlers } from './Transcript.tsx';
 import { Composer } from './Composer.tsx';
 import { PermissionSheet, OutputSheet, MenuSheet } from './Sheets.tsx';
@@ -219,7 +219,6 @@ export function ChatView({ session, sock, connection, onBack, registerEvent, reg
           meta={meta || '会话'}
           mode={state.live.permissionMode}
           onMode={(m) => sock.control(session.id, 'set_permission_mode', { mode: m })}
-          onExport={() => void copyTranscript(state.items)}
           onEnd={stop}
           onDismiss={() => setMenu(false)}
         />
@@ -310,21 +309,4 @@ function Banner({ connection, sessionOffline, machine, onRetry }: {
     );
   }
   return null;
-}
-
-/** Markdown export (1h). Copy rather than download: a blob download is blocked or invisible in
- * several mobile browsers, while the clipboard works everywhere. */
-async function copyTranscript(items: Item[]): Promise<void> {
-  const out: string[] = [];
-  for (const it of items) {
-    if (it.kind === 'user') out.push(`\n## 你\n\n${it.text}`);
-    else if (it.kind === 'prose') out.push(`\n${it.text}`);
-    // Textless markers are not in the transcript either, so the export must not invent them.
-    else if (it.kind === 'thinking') { if (it.text.trim()) out.push(`\n_思考_\n\n${it.text}`); }
-    else if (it.kind === 'tools') for (const c of it.calls) out.push(`\n- **${toolDisplayName(c.name)}** \`${(c.input?.command ?? c.input?.file_path ?? c.input?.pattern ?? '').toString().split('\n')[0]}\` — ${c.status}`);
-    else if (it.kind === 'todo') out.push(`\n${it.tasks.map((t) => `- [${t.status === 'completed' ? 'x' : ' '}] ${t.subject}`).join('\n')}`);
-    else if (it.kind === 'status') out.push(`\n_${it.text}_`);
-    else if (it.kind === 'error') out.push(`\n> ⚠ ${it.title}${it.detail ? ` — ${it.detail}` : ''}`);
-  }
-  try { await navigator.clipboard.writeText(out.join('\n').trim()); haptic('success'); } catch { /* denied */ }
 }

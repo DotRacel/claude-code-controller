@@ -31,7 +31,10 @@ export const Dots = (p: P) => (
 export const Plus = (p: P) => <Svg {...p}><path d="M12 5v14M5 12h14" /></Svg>;
 export const Close = (p: P) => <Svg {...p} width={2.2}><path d="M18 6 6 18M6 6l12 12" /></Svg>;
 export const Lock = (p: P) => <Svg {...p} width={2.1}><rect x="4" y="10.5" width="16" height="10" rx="2.5" /><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3" /></Svg>;
-export const Search = (p: P) => <Svg {...p}><circle cx="11" cy="11" r="7" /><path d="M16.5 16.5 21 21" /></Svg>;
+export const Help = (p: P) => <Svg {...p} width={2.1}><circle cx="12" cy="12" r="8.6" /><path d="M9.5 9.4a2.6 2.6 0 0 1 5.1.7c0 1.7-2.5 2.2-2.5 3.8M12 17.2v.01" /></Svg>;
+/** Leaving, not configuring: a door with the arrow already through it. Deliberately not a gear —
+ * the gear promised settings this screen does not have. */
+export const SignOut = (p: P) => <Svg {...p} width={2.1}><path d="M9.5 20.5H6a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2h3.5" /><path d="m16 16.5 5-4.5-5-4.5M21 12H9.5" /></Svg>;
 export const Branch = (p: P) => <Svg {...p} width={2.2}><circle cx="7" cy="6" r="2.6" /><circle cx="7" cy="18" r="2.6" /><circle cx="17" cy="12" r="2.6" /><path d="M7 8.6v6.8M9.6 6h2.4a2.4 2.4 0 0 1 2.4 2.4v1.2" /></Svg>;
 export const Check = (p: P) => <Svg {...p} width={2.4}><path d="M5 13l4 4L19 7" /></Svg>;
 export const ArrowDown = (p: P) => <Svg {...p} width={2.2}><path d="M12 5v14M6 13l6 6 6-6" /></Svg>;
@@ -43,8 +46,6 @@ export const Info = (p: P) => <Svg {...p} width={2.2}><circle cx="12" cy="12" r=
 export const ChevronDown = (p: P) => <Svg {...p} width={2.2}><path d="m8 10 4 4 4-4" /></Svg>;
 export const Gear = (p: P) => <Svg {...p}><circle cx="12" cy="12" r="3.2" /><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1" /></Svg>;
 export const Pencil = (p: P) => <Svg {...p}><path d="M4 20h4L19 9l-4-4L4 16z" /></Svg>;
-export const Download = (p: P) => <Svg {...p}><path d="M12 3v12M7.5 10.5 12 15l4.5-4.5M5 20h14" /></Svg>;
-export const Archive = (p: P) => <Svg {...p}><rect x="4" y="4" width="16" height="5" rx="1.6" /><path d="M6 9v9.5A1.5 1.5 0 0 0 7.5 20h9a1.5 1.5 0 0 0 1.5-1.5V9" /></Svg>;
 export const Doc = (p: P) => <Svg {...p}><path d="M6 3h7l5 5v13H6z" /></Svg>;
 export const Brain = (p: P) => <Svg {...p} width={1.8}><path d="M9.5 4.5A3.5 3.5 0 0 0 6 8v.6A3 3 0 0 0 5 14v1a3 3 0 0 0 3 3h1.5M14.5 4.5A3.5 3.5 0 0 1 18 8v.6A3 3 0 0 1 19 14v1a3 3 0 0 1-3 3h-1.5M12 4v16" /></Svg>;
 export const Terminal = (p: P) => <Svg {...p} width={2}><path d="M4 5h16v14H4zM8 10l2 2-2 2M13 14h4" /></Svg>;
