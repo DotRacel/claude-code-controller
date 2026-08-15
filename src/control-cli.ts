@@ -379,6 +379,17 @@ export function withDebugFlag(args: string[]): string[] {
   return args.some((a) => a === '--debug' || a.startsWith('--debug=')) ? args : [...args, '--debug'];
 }
 
-// Only run when invoked as the CLI — the arg parsing above is imported by tests.
-const invokedDirectly = !!process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (invokedDirectly) main().catch((e) => { console.error('[control-cli] fatal:', e); process.exit(1); });
+/**
+ * Whether we were run as the CLI rather than imported (the arg parsing above is imported by
+ * tests). argv[1] must be realpath'd first: an npm-installed bin is a symlink, so argv[1] is
+ * `…/bin/control-claude-code` while import.meta.url is the resolved `…/dist/cli.mjs`. Comparing
+ * them unresolved makes an installed copy exit silently without ever calling main().
+ */
+function invokedAsCli(): boolean {
+  const arg = process.argv[1];
+  if (!arg) return false;
+  const self = fileURLToPath(import.meta.url);
+  try { return fs.realpathSync(arg) === self; } catch { return path.resolve(arg) === self; }
+}
+
+if (invokedAsCli()) main().catch((e) => { console.error('[control-cli] fatal:', e); process.exit(1); });
