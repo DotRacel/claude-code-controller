@@ -10,18 +10,14 @@
  * unordered lists (one nesting level), paragraphs; inline code, bold, italic, links.
  * Anything else falls through as literal text, which is the correct failure mode here.
  */
-import { createElement as h, useState, type ReactNode } from 'react';
+import { createElement as h, type ReactNode } from 'react';
+import { useCopy } from './clipboard.ts';
 
 /** Code blocks get a copy button: selecting monospace text by touch is miserable. */
 function CodeBlock({ code, lang }: { code: string; lang?: string }) {
-  const [copied, setCopied] = useState(false);
+  const { label, failed, copy } = useCopy(code);
   return h('div', { className: 'md-pre', 'data-lang': lang || undefined },
-    h('button', {
-      className: 'md-copy',
-      onClick: async () => {
-        try { await navigator.clipboard.writeText(code); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* denied */ }
-      },
-    }, copied ? '已复制' : '复制'),
+    h('button', { className: `md-copy${failed ? ' fail' : ''}`, type: 'button', onClick: copy }, label),
     h('pre', null, h('code', null, code)),
   );
 }

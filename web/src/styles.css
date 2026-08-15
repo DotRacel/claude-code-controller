@@ -560,6 +560,8 @@ textarea { font: inherit; }
 /* the copy button gets its own row rather than floating: over a horizontally scrolling block it
    covered whatever happened to be at the right edge of the first line. */
 .md-copy { align-self: flex-end; padding: 6px 10px 4px; font: 600 11px/1.4 var(--sans); color: var(--muted); }
+/* a copy that could not happen says so — silence reads as a dead button (see web/src/clipboard.ts) */
+.md-copy.fail, .btn.fail { color: var(--danger); }
 
 /* ── reduce motion: everything becomes an 80ms opacity fade (0c) ── */
 @media (prefers-reduced-motion: reduce) {

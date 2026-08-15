@@ -8,6 +8,7 @@ import type { PermissionRequest, ToolCall } from '../model.ts';
 import type { PermissionAnswer } from '../ws.ts';
 import { toolDisplayName, toolArg, durationLabel } from '../tools.ts';
 import { haptic } from '../haptics.ts';
+import { useCopy } from '../clipboard.ts';
 import { Lock, Copy, Info, Gear, Pencil } from '../icons.tsx';
 
 /** The worker's own suggestion, phrased as a button. Only ever what it offered — the phone
@@ -61,12 +62,9 @@ export function PermissionSheet({ req, cwd, onAnswer, onDismiss }: {
 }
 
 export function OutputSheet({ call, onDismiss }: { call: ToolCall; onDismiss: () => void }) {
-  const [copied, setCopied] = useState(false);
   const dur = durationLabel(call.endedAt && call.startedAt ? call.endedAt - call.startedAt : undefined);
   const body = call.result ?? '';
-  const copy = async () => {
-    try { await navigator.clipboard.writeText(body); setCopied(true); haptic('light'); setTimeout(() => setCopied(false), 1500); } catch { /* denied */ }
-  };
+  const { label, failed, copy } = useCopy(body);
   return (
     <Sheet onDismiss={onDismiss} height="78%">
       <div className="out-head">
@@ -83,7 +81,7 @@ export function OutputSheet({ call, onDismiss }: { call: ToolCall; onDismiss: ()
         <div className={`out-body${call.status === 'error' ? ' fail' : ''}`}>{body || '（没有输出）'}</div>
       </div>
       <div className="out-actions">
-        <button className="btn" style={{ flex: 1 }} onClick={copy}><Copy size={15} />{copied ? '已复制' : '复制'}</button>
+        <button className={`btn${failed ? ' fail' : ''}`} style={{ flex: 1 }} onClick={copy}><Copy size={15} />{label}</button>
       </div>
     </Sheet>
   );
@@ -138,13 +136,10 @@ export function MenuSheet({ meta, mode, onMode, onEnd, onDismiss }: {
 /** A command block. It scrolls rather than wraps (a wrapped command gets pasted wrong), which on
  * a phone makes selecting it by hand hopeless — hence the copy button rather than a bare block. */
 function Cmd({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  const copy = async () => {
-    try { await navigator.clipboard.writeText(text); setCopied(true); haptic('light'); setTimeout(() => setCopied(false), 1500); } catch { /* denied */ }
-  };
+  const { label, failed, copy } = useCopy(text);
   return (
     <div className="help-cmd">
-      <button className="md-copy" onClick={copy}>{copied ? '已复制' : '复制'}</button>
+      <button className={`md-copy${failed ? ' fail' : ''}`} type="button" onClick={copy}>{label}</button>
       <pre>{text}</pre>
     </div>
   );
