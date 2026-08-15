@@ -299,9 +299,7 @@ async function main() {
  */
 async function runInteractive(o: RunCtx) {
   const { logger } = o;
-  console.log(`${ts()} 启动交互式 claude + 注入 remote control 支持…  bridge → ${o.serverUrl}  cred=${o.credential.slice(0, 10)}…  cwd=${o.cwd}`);
-  if (o.claudeArgs.length) console.log(`${ts()} 转发给 claude 的参数: ${o.claudeArgs.join(' ')}`);
-  console.log(`${ts()} 日志: ${logger.file}`);
+  logger.log(`[cli] interactive start bridge=${o.serverUrl} cwd=${o.cwd} args=${o.claudeArgs.join(' ')}`);
 
   let stderrTail = '';
   const h = await launchInteractiveWithGatesRebound({
@@ -315,7 +313,7 @@ async function runInteractive(o: RunCtx) {
     onStderr: (s) => { logger.appendClaude(s); stderrTail = (stderrTail + s).slice(-4000); },
   });
   const okN = h.reports.filter((r) => r.located).length;
-  console.log(`${ts()} 就绪 — ${okN}/${h.reports.length} gates rebound。进入 claude；需要远程时输入 \x1b[1m/rc\x1b[0m，会话即出现在手机上。\n`);
+  logger.log(`[cli] ready — ${okN}/${h.reports.length} gates rebound`);
 
   let code: number | null = null;
   h.child.on('exit', (c) => { code = c; });
