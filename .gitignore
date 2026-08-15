@@ -6,4 +6,4 @@ web/dist/
 !.env.example
 *.log
 .DS_Store
-artifacts/ui/
+artifacts/
