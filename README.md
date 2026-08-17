@@ -13,11 +13,10 @@ Requires Node ≥ 22 and `claude` ≥ 2.1.229. Linux and macOS.
 ## Install
 
 ```bash
-npm i -g control-claude-code@beta     # or: npx control-claude-code@beta
+npm i -g control-claude-code     # or: npx control-claude-code
 ```
 
-Only prereleases are published so far, hence `@beta`. The package is `control-claude-code`; the
-command it installs is `control-claude`.
+The package is `control-claude-code`; the command it installs is `control-claude`.
 
 ## Use
 
