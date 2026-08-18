@@ -134,8 +134,14 @@ export const GATES: GateSpec[] = [
     id: 'spawner.spawn',
     windowAnchor: '--replay-user-messages',
     windowBack: 0,
-    windowFwd: 1200,
-    aliases: { L: 'env:([\\w$]+),windowsHide' },
+    windowFwd: 1600,
+    // `{...,env:l,windowsHide:!0}` is the spawn options object. Match only up to the env
+    // alias (`env:l,`) — as of 2.1.234 `windowsHide` sits at ~1204 bytes past the anchor,
+    // so anchoring on it was fragile at the window edge (windowFwd used to be 1200 and cut
+    // it off, breaking the whole headless child-rebind chain). `[,}]` after the alias is
+    // enough to disambiguate the spawn env from `e.env` (which has no colon) and from the
+    // long env-object literal above (whose keys are CLAUDE_CODE_*, never `env`).
+    aliases: { L: 'env:([\\w$]+)[,}]' },
     // Break BEFORE the spawn call (the `.spawn(` site fires AFTER the child is already
     // spawned). The env object `l` is defined just before this debug log, so pausing here
     // lets us mutate l.BUN_INSPECT before the spawn reads it.
