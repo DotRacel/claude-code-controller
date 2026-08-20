@@ -8,11 +8,30 @@ sheet instead of inline dumps. Fonts are self-hosted (`web/public/fonts`, latin 
 variable ⇒ 4 files / 140 KB) and precached by the service worker.
 
 **The transcript is a pure reducer.** `web/src/model.ts` folds data-plane payloads into render
-items (`user · prose · thinking · tools · todo · question · bgtask · status · error`) plus a
-`live` block (busy, running tool, thinking tokens, model, permission mode, slash commands). The
-same function eats the history backfill and the live stream, so a reopened session renders
-identically — and it is testable without a browser (`test/model.test.ts`, `npm run render-history`
-replays a real session out of PostgreSQL).
+items (`user · prose · thinking · tools · todo · question · bgtask · status · divider · error ·
+unknown`) plus a `live` block (busy, running tool, thinking tokens, model, permission mode, slash
+commands). The same function eats the history backfill and the live stream, so a reopened session
+renders identically — and it is testable without a browser (`test/model.test.ts`,
+`npm run render-history` replays a real session out of PostgreSQL).
+
+**Two guardrails hold that pipeline to its own contract**, because both ends of it used to leak in
+silence and neither leak was visible from inside the app:
+
+- *Nothing arrives without a decision.* `reduce` looks up `verdictOf(shapeOf(payload))`
+  (`src/wire-shape.ts`) **before** dispatching. Declared noise (a heartbeat, the receipt for a
+  request we sent) returns the very same state object — identity matters, because `ChatView`
+  reduces with `setState((prev) => reduce(prev, payload))` and a fresh object per keep_alive
+  re-renders the whole transcript. Anything undecided is counted in `state.unhandled` and drawn as
+  the faintest thing on the screen: `⋯ 未适配消息 · system:foo`, mono, with the shape key spelled
+  out so a screenshot is a bug report. It used to be dropped by `system()`'s own `default` arm, one
+  level below where anything was watching — and `system` subtypes are exactly where new wire shapes
+  appear.
+- *Nothing renders by accident.* `web/src/render/contract.ts` declares
+  `ItemRenderers = { [K in Item['kind']]: … }`, so a kind with no renderer is a compile error in
+  `render/phone.tsx` rather than a blank space. `divider` shipped as that blank space — reducer,
+  CSS and all — because `ItemView` was a `switch`, and a missing `case` falls through to
+  `undefined`, which is a perfectly legal ReactNode. A desktop layout is a second object of the
+  same type; adding a kind then fails to compile in both files until each decides how to draw it.
 
 Four things the design doc could not have known, found by reading real captured traffic:
 
@@ -86,10 +105,15 @@ next to it — a sheet with the three commands (`npm i -g control-claude-code` �
 The logout control is a door-with-arrow icon (a gear promised settings this screen does not have)
 and asks twice before it forgets the key.
 
-Verified by: `npm test` (76 tests, ~4s — reducer invariants against real captured shapes in
+Verified by: `npm test` (112 tests, ~5s — reducer invariants against real captured shapes in
 `test/fixtures/transcript-shapes.jsonl`, permission pass-through and digest derivation over a real
-socket, digest persistence across a restart), `npm run e2e-interactive`, `npm run e2e-question`,
-and `cd web && npm run build` (typechecks first).
+socket, digest persistence across a restart, the shape column written and backfilled against a
+real PostgreSQL), `npm run e2e-interactive`, `npm run e2e-question`, and
+`cd web && npm run build` (typechecks first).
+
+The renderer-completeness guardrail is checked by breaking it on purpose: add a throwaway kind to
+`Item` and `cd web && tsc` must fail with `TS2741` at `render/phone.tsx`. Before that type existed
+the same edit compiled clean, `npm test` stayed green, and the item simply did not draw.
 
 ### Reviewing the phone UI without a phone
 
