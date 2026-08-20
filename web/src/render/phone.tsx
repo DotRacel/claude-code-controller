@@ -1,0 +1,371 @@
+/**
+ * phone.tsx — the phone's renderer for every item kind, as one `ItemRenderers` object.
+ *
+ * Rendering rules taken from the design doc:
+ *  - assistant prose is serif, with no avatar and no bubble; the user's turn is the only bubble
+ *  - adjacent tool calls are one bordered group, each row a single line + a result line
+ *  - a tool's raw output is NOT inline: the row opens the output sheet (1e)
+ *  - only the newest item animates in; earlier ones never re-animate on re-render (0c)
+ *  - a tool card is one element to a screen reader ("Bash, npm test, failed, double-tap …")
+ *
+ * The keys of `phoneRenderers` are checked against `Item['kind']` (render/contract.ts), so this
+ * file is where a newly added item kind fails to compile until someone decides how a phone draws
+ * it. Everything touch-shaped lives here on purpose — long-press, scroll slop, bottom sheets — so
+ * a second platform can differ where it should and share the reducer where it must.
+ */
+import { Fragment, useRef, useState } from 'react';
+import type { Item, ToolCall, TodoTask, Question } from '../model.ts';
+import type { ImageAttachment } from '../../../src/image-blob.ts';
+import { type ItemActions, type ItemRenderers, enterClass } from './contract.ts';
+import { toolDisplayName, toolArg, splitPath, argIsPath, resultLine, byteLabel, imageKindLabel, durationLabel } from '../tools.ts';
+import { renderMarkdown } from '../md.ts';
+import { haptic } from '../haptics.ts';
+import { Check, Alert, Brain, ClaudeMark, Picture } from '../icons.tsx';
+
+const LONG_PRESS_MS = 400;
+/**
+ * A touch that travels further than this is a scroll, not a tap. iOS does NOT reliably send
+ * touchcancel when a drag inside a scroll container turns into a scroll — the same touch just
+ * ends normally — so a hand-rolled touchend handler would open the card you scrolled off.
+ */
+const SCROLL_SLOP_PX = 10;
+
+/**
+ * One entry per kind the reducer can produce. Each is the arm of what used to be a `switch`; the
+ * difference is that a missing arm is now a type error rather than a blank space on the screen.
+ */
+export const phoneRenderers: ItemRenderers = {
+  user: ({ it, isLast }) => (
+    <div className={`bubble-user${it.state === 'queued' ? ' queued' : ''} ${enterClass(isLast) ?? ''}`}>
+      {it.text}
+    </div>
+  ),
+
+  prose: ({ it, isLast }) => (
+    <div className={`prose md ${enterClass(isLast) ?? ''}`}>
+      {renderMarkdown(it.text)}
+      {it.streaming && <span className="caret" />}
+    </div>
+  ),
+
+  // A textless block carries nothing to read, so it renders nothing at all.
+  thinking: ({ it, isLast }) => (it.text.trim() ? <ThinkingView it={it} cls={enterClass(isLast)} /> : null),
+
+  tools: ({ it, isLast, h }) => <ToolGroup calls={it.calls} cls={enterClass(isLast)} h={h} />,
+
+  todo: ({ it, isLast }) => <TodoCard tasks={it.tasks} cls={enterClass(isLast)} />,
+
+  question: ({ it, isLast, h }) => <QuestionCard it={it} cls={enterClass(isLast)} onAnswer={h.onAnswerQuestion} />,
+
+  bgtask: ({ it, isLast }) => <BgTaskCard it={it} cls={enterClass(isLast)} />,
+
+  status: ({ it, isLast }) => <div className={`status-line ${enterClass(isLast) ?? ''}`}>{it.text}</div>,
+
+  // /clear, a compaction, or the worker going away: the turns above it belong to a conversation
+  // that no longer exists, so the break has to be visible.
+  divider: ({ it, isLast }) => <div className={`divider ${enterClass(isLast) ?? ''}`}><span>{it.label}</span></div>,
+
+  error: ({ it, isLast }) => (
+    <div className={`error-card ${enterClass(isLast) ?? ''}`}>
+      <div className="t1"><Alert size={14} /> {it.title}</div>
+      {it.detail && <div className="t2">{it.detail}</div>}
+    </div>
+  ),
+
+  unknown: ({ it, isLast }) => <UnknownChip it={it} cls={enterClass(isLast)} />,
+};
+
+/**
+ * A payload we could not render. Deliberately the quietest thing on the screen — it is a note to
+ * whoever maintains this, not news for the person reading the conversation — but present, because
+ * the alternative is a transcript that skips a beat with nothing to show it happened. The shape is
+ * spelled out so a screenshot is a bug report: it is the exact key `npm run shape-report` lists.
+ */
+function UnknownChip({ it, cls }: { it: Extract<Item, { kind: 'unknown' }>; cls?: string }) {
+  return (
+    <div className={`unknown-chip ${cls ?? ''}`} title="这条消息的格式还没有适配">
+      ⋯ 未适配消息 · {it.shape}{it.count > 1 ? ` ×${it.count}` : ''}
+    </div>
+  );
+}
+
+/**
+ * The data plane relays `thinking: ""` — the signature only, never the reasoning text (verified
+ * across every thinking block in a real session). So in practice this never renders; it exists for
+ * the case where a future version does send the text, and only ever with text in hand (the
+ * renderer above drops the textless markers).
+ */
+function ThinkingView({ it, cls }: { it: Extract<Item, { kind: 'thinking' }>; cls?: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className={`thinking ${cls ?? ''}`}>
+      <button className="thinking-head" onClick={() => setOpen(!open)}>
+        <Brain size={14} />
+        思考 · {open ? '收起' : '展开'}
+      </button>
+      {open && <div className="thinking-body">{it.text}</div>}
+    </div>
+  );
+}
+
+/**
+ * A background task, with whatever `system:task_progress` has said since it started. Those frames
+ * are the only news a long task ever gives — a workflow can run for minutes between its
+ * `task_started` and its notification — so the card shows the current step, not just a spinner.
+ */
+function BgTaskCard({ it, cls }: { it: Extract<Item, { kind: 'bgtask' }>; cls?: string }) {
+  const running = it.status === 'running';
+  const state = running ? 'running…'
+    : it.status === 'failed' ? '失败'
+    : it.status === 'interrupted' ? '已中断'   // the worker went away mid-task
+    : '完成';
+  const bits = [state, durationLabel(it.ms), it.tools ? `${it.tools} 次工具` : null].filter(Boolean);
+  return (
+    <div className={`bgtask${it.status === 'failed' ? ' failed' : ''} ${cls ?? ''}`}>
+      <span className={`dot ${running ? 'run' : it.status === 'completed' ? 'on' : 'off'}`} />
+      <div className="bgtask-text">
+        <div className="t1">{it.description}</div>
+        <div className="t2">后台任务 · {bits.join(' · ')}</div>
+        {/* Where it got to. Dropped once a task completes (the step it ended on says nothing then),
+            but kept for one that failed or was interrupted — that IS the useful part. */}
+        {it.status !== 'completed' && it.detail && <div className="t3">{it.detail}</div>}
+        {it.status !== 'completed' && it.phases && it.phases.length > 0 && (
+          <div className="t3 phases">{it.phases.join(' › ')}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Images a tool returned. They are NOT loaded with the transcript: the server replaced the base64
+ * with a reference (src/image-blob.ts), so this renders a placeholder and fetches the bytes only
+ * when tapped. An attachment that already carries its data (an unstripped payload, a fixture)
+ * shows immediately — there is nothing left to save by hiding it.
+ */
+function ImageStrip({ images, h }: { images: ImageAttachment[]; h: ItemActions }) {
+  return (
+    <div className="tool-images">
+      {images.map((att, i) => <ImageAttachmentView key={att.ref ?? i} att={att} url={h.imageUrl(att)} />)}
+    </div>
+  );
+}
+
+function ImageAttachmentView({ att, url }: { att: ImageAttachment; url: string | undefined }) {
+  // Data already in hand renders straight away; a reference waits for a tap.
+  const [show, setShow] = useState(!!att.dataUrl);
+  const [failed, setFailed] = useState(false);
+  const kind = imageKindLabel(att.mediaType);
+  const size = byteLabel(att.bytes);
+  const caption = [kind, size].filter(Boolean).join(' · ');
+
+  if (!url) return <div className="img-att gone">图片已不可用</div>;
+  if (failed) return <div className="img-att gone">图片加载失败 · {caption}</div>;
+  if (!show) {
+    return (
+      <button className="img-att" onClick={() => setShow(true)} aria-label={`加载图片，${caption}`}>
+        {/* An SVG, not an emoji: the self-hosted fonts carry no emoji glyphs, so 🖼 renders as
+            tofu wherever the system font does not supply one. */}
+        <span className="img-icon" aria-hidden="true"><Picture size={14} /></span>
+        <span className="img-meta">{caption}</span>
+        <span className="img-cta">点击加载</span>
+      </button>
+    );
+  }
+  // A new tab is the phone's own image viewer: pinch-zoom and save come for free.
+  return (
+    <a className="img-att-shown" href={url} target="_blank" rel="noreferrer">
+      <img src={url} alt={`工具返回的图片 · ${caption}`} onError={() => setFailed(true)} />
+    </a>
+  );
+}
+
+function ToolGroup({ calls, cls, h }: { calls: ToolCall[]; cls?: string; h: ItemActions }) {
+  const bad = calls.some((c) => c.status === 'error');
+  const waiting = calls.some((c) => c.status === 'awaiting');
+  return (
+    <div className={`tool-group${bad ? ' err' : ''}${waiting ? ' await' : ''} ${cls ?? ''}`}>
+      {calls.map((c) => (
+        <Fragment key={c.toolUseId}>
+          <ToolRow call={c} onOpen={h.onOpenOutput} />
+          {c.images && c.images.length > 0 && <ImageStrip images={c.images} h={h} />}
+        </Fragment>
+      ))}
+    </div>
+  );
+}
+
+function ToolRow({ call, onOpen }: { call: ToolCall; onOpen: (c: ToolCall) => void }) {
+  const [pressed, setPressed] = useState(false);
+  const timer = useRef<number | undefined>(undefined);
+  const fired = useRef(false);
+  const touched = useRef(false); // a touch also emits synthetic mouse events; ignore those
+  const from = useRef<{ x: number; y: number } | null>(null); // where the finger landed
+  const scrolled = useRef(false); // …and whether it then moved enough to be a scroll
+  const label = toolDisplayName(call.name);
+  const arg = toolArg(call.name, call.input);
+  const res = resultLine(call);
+  const openable = !!call.result;
+
+  const begin = () => {
+    if (!openable) return;
+    fired.current = false;
+    setPressed(true);
+    // Long-press is the design's gesture (0c: 400ms, card scales to .98); a plain tap opens it
+    // too, because on a phone nobody discovers a long-press on their own.
+    timer.current = window.setTimeout(() => {
+      timer.current = undefined;
+      fired.current = true;
+      haptic('selection');
+      setPressed(false);
+      onOpen(call);
+    }, LONG_PRESS_MS);
+  };
+  const end = (fire: boolean) => {
+    window.clearTimeout(timer.current);
+    timer.current = undefined;
+    setPressed(false);
+    if (fire && !fired.current && openable) onOpen(call);
+  };
+
+  return (
+    <button
+      className={`tool-row${pressed ? ' press' : ''}`}
+      onTouchStart={(e) => {
+        touched.current = true;
+        const t = e.touches[0];
+        from.current = t ? { x: t.clientX, y: t.clientY } : null;
+        scrolled.current = false;
+        begin();
+      }}
+      onTouchMove={(e) => {
+        const f = from.current;
+        const t = e.touches[0];
+        if (!f || !t || scrolled.current) return;
+        if (Math.abs(t.clientY - f.y) > SCROLL_SLOP_PX || Math.abs(t.clientX - f.x) > SCROLL_SLOP_PX) {
+          scrolled.current = true;
+          end(false); // also kills the pending long-press, so a slow scroll cannot open it either
+        }
+      }}
+      onTouchEnd={() => end(!scrolled.current)}
+      onTouchCancel={() => end(false)}
+      onMouseDown={() => { if (!touched.current) begin(); }}
+      onMouseUp={() => { if (!touched.current) end(true); }}
+      onMouseLeave={() => { if (!touched.current) end(false); }}
+      disabled={!openable}
+      aria-label={`${label}${arg ? `, ${arg}` : ''}, ${res?.text ?? ''}${openable ? '，双击查看输出' : ''}`}
+    >
+      <div className="tool-head">
+        {label} {arg && <span className="arg">{argIsPath(call.name) ? <PathArg p={arg} /> : arg}</span>}
+        {/* an Edit's counts ride along with the path instead of taking a line of their own. The
+            separating space is outside .delta so a long path can still push the pair onto the next
+            line rather than overflowing (.delta itself never breaks). */}
+        {res?.delta && <>{' '}<span className="delta"><span className="add">+{res.delta.add}</span> <span className="del">−{res.delta.del}</span></span></>}
+      </div>
+      {res && !res.delta && (
+        <div className={`tool-result-line${res.isError ? ' err' : ''}`}>{res.text}</div>
+      )}
+    </button>
+  );
+}
+
+/** `src/routes/checkout/` dim + `handler.ts` bright — the filename is what you scan for. */
+function PathArg({ p }: { p: string }) {
+  const { dir, base } = splitPath(p);
+  return <>{dir && <span className="dim">{dir}</span>}{base}</>;
+}
+
+function TodoCard({ tasks, cls }: { tasks: TodoTask[]; cls?: string }) {
+  return (
+    <div className={`tool-group ${cls ?? ''}`}>
+      <div className="tool-head">任务清单</div>
+      <div className="todo-list">
+        {tasks.map((t) => (
+          <div key={t.key} className={`todo-item ${t.status === 'completed' ? 'done' : t.status === 'in_progress' ? 'active' : ''}`}>
+            <span className="todo-box">{t.status === 'completed' && <Check size={11} stroke="#1f1e1c" />}</span>
+            <span>{t.subject}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * AskUserQuestion. It arrives as a can_use_tool permission request, but a 2–4 question form
+ * does not fit a modal, so it renders inline and the transcript stays scrollable behind it.
+ * Answering replies allow + updatedInput.answers (question text → chosen label).
+ */
+function QuestionCard({ it, cls, onAnswer }: {
+  it: Extract<Item, { kind: 'question' }>;
+  cls?: string;
+  onAnswer: ItemActions['onAnswerQuestion'];
+}) {
+  const [picked, setPicked] = useState<Record<string, string[]>>({});
+  const [freeform, setFreeform] = useState('');
+  const answered = it.answered !== undefined;
+
+  const toggle = (q: Question, label: string) => {
+    haptic('selection');
+    setPicked((prev) => {
+      const cur = prev[q.question] ?? [];
+      if (q.multiSelect) {
+        return { ...prev, [q.question]: cur.includes(label) ? cur.filter((l) => l !== label) : [...cur, label] };
+      }
+      return { ...prev, [q.question]: cur[0] === label ? [] : [label] };
+    });
+  };
+
+  const submit = (skip: boolean) => {
+    const answers: Record<string, string> = {};
+    if (!skip) for (const q of it.questions) {
+      const cur = picked[q.question];
+      if (cur?.length) answers[q.question] = cur.join(', '); // multi-select is comma-joined (worker's own format)
+    }
+    onAnswer(it, answers, skip ? undefined : freeform.trim() || undefined);
+  };
+
+  const complete = it.questions.every((q) => picked[q.question]?.length) || !!freeform.trim();
+
+  return (
+    <div className={`qcard${answered ? ' answered' : ''} ${cls ?? ''}`}>
+      <div className="qcard-head"><ClaudeMark size={15} fill="#d97757" /><span className="t1">Claude 想问你</span></div>
+      {it.questions.map((q, qi) => (
+        <div className="qblock" key={qi}>
+          {q.header && <span className="qchip">{q.header}</span>}
+          <div className="qtext">{q.question}</div>
+          {!answered && (
+            <div className="qopts">
+              {q.options.map((o, oi) => {
+                const on = (picked[q.question] ?? []).includes(o.label);
+                return (
+                  <button key={oi} className={`qopt${on ? ' on' : ''}`} onClick={() => toggle(q, o.label)}>
+                    <div className="l">{o.label}</div>
+                    {o.description && <div className="d">{o.description}</div>}
+                    {o.preview && <div className="p">{o.preview}</div>}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      ))}
+      {answered
+        ? <div className="qanswer">{it.answered!.trim() || '已回答'}</div>
+        : (
+          <>
+            <div className="qblock" style={{ paddingTop: 0 }}>
+              <input
+                className="qother" placeholder="或者直接写点别的…" value={freeform}
+                onChange={(e) => setFreeform(e.target.value)}
+              />
+            </div>
+            <div className="qactions">
+              <button className="btn" onClick={() => { haptic('medium'); submit(true); }}>跳过</button>
+              <button className="btn primary" style={{ flex: 1 }} disabled={!complete} onClick={() => { haptic('light'); submit(false); }}>提交</button>
+            </div>
+          </>
+        )}
+    </div>
+  );
+}

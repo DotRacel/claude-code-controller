@@ -195,15 +195,23 @@ export function imageAttachmentsOf(toolResult: any): ImageAttachment[] {
   return out;
 }
 
-/** Text content of a `tool_result`, ignoring non-text blocks (which render as attachments). */
+/**
+ * Text content of a `tool_result`, ignoring non-text blocks (which render as attachments).
+ *
+ * A block type we do not know becomes a NAMED PLACEHOLDER, never its JSON. Stringifying it was
+ * the worse half of the image bug: not "nothing on screen" but something that looks like content
+ * — a wall of `{"type":"document","source":{…}}` sitting in a tool card as if the tool had
+ * printed it. The placeholder says what arrived and stops; the count that puts it on the backlog
+ * comes from unknownBlockTypes (src/wire-shape.ts), which the reducer calls on the same content.
+ */
 export function toolResultText(content: unknown): string {
   if (typeof content === 'string') return content;
-  if (!Array.isArray(content)) return content == null ? '' : JSON.stringify(content);
+  if (!Array.isArray(content)) return content == null ? '' : `[${typeof content}]`;
   const parts: string[] = [];
   for (const b of content) {
     if (b?.type === 'text' && typeof b.text === 'string') parts.push(b.text);
     else if (b?.type === 'image') continue; // rendered as an attachment
-    else if (b != null) parts.push(JSON.stringify(b));
+    else if (b != null) parts.push(`[${typeof b.type === 'string' && b.type ? b.type : 'unknown block'}]`);
   }
   return parts.join('\n');
 }

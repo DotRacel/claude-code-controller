@@ -15,6 +15,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { reduce, reduceAll, initialState, localSend, turnActiveIn, type Item, type TranscriptState } from '../web/src/model.ts';
 import { resultLine } from '../web/src/tools.ts';
+import { verdictOf, SHAPES } from '../src/wire-shape.ts';
 import { stripImageBlobs } from '../src/image-blob.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -35,6 +36,18 @@ test('the fixture still covers every shape the reducer branches on', () => {
     'system:worker_shutting_down', 'conversation_reset', 'control_cancel_request']) {
     assert.ok(seen.has(want), `fixture lost coverage of ${want}`);
   }
+});
+
+/**
+ * The corpus is this project's memory of what production taught it. Every shape that was ever
+ * adapted has a payload in the fixture, so a refactor cannot quietly un-learn one — and the check
+ * is dynamic, which the list above is not: it needs no maintenance to keep covering a shape added
+ * next month by `history-audit --promote`.
+ */
+test('nothing in the fixture is an undecided shape any more', () => {
+  const s = history();
+  assert.deepEqual(s.unhandled, {}, 'a shape in the corpus lost its handling');
+  assert.equal(only(s, 'unknown').length, 0, 'and none of it renders as an unadapted marker');
 });
 
 test('no raw JSON ever reaches a rendered item', () => {
@@ -293,13 +306,68 @@ test('result lines summarise instead of dumping output', () => {
   assert.ok(long.text.length < 130, 'a result line must never carry the whole output');
 });
 
-test('unknown event types and subtypes are inert', () => {
+/**
+ * The two halves of what used to be one test asserting "unknown types are inert". Inertness was
+ * the bug, not the invariant: a shape nobody had decided about vanished, and the only way to find
+ * out was for someone to notice a hole in a transcript on their phone. What must stay true is
+ * narrower — an unrecognised payload may never disturb what is already rendered — and declared
+ * noise must stay genuinely free.
+ */
+test('declared noise is inert, and returns the same state object', () => {
   const before = history();
   let s = before;
-  for (const p of [{ type: 'keep_alive' }, { type: 'system', subtype: 'a_brand_new_subtype', anything: 1 }, { type: 'who_knows' }, null, 'nope']) {
+  for (const p of [{ type: 'keep_alive' }, { type: 'control_response', response: { subtype: 'success' } }, null, 'nope']) {
     s = reduce(s, p, { isHistory: true });
   }
-  assert.deepEqual(kinds(s), kinds(before));
+  assert.equal(s, before, 'identity preserved — ChatView re-renders the transcript on every new object');
+  assert.deepEqual(s.unhandled, {}, 'noise is not backlog');
+});
+
+test('an undecided shape is marked and counted, and disturbs nothing', () => {
+  const before = history();
+  let s = reduce(before, { type: 'system', subtype: 'a_brand_new_subtype', anything: 1 }, { isHistory: true });
+  s = reduce(s, { type: 'who_knows' }, { isHistory: true });
+
+  assert.deepEqual(s.unhandled, { 'system:a_brand_new_subtype': 1, who_knows: 1 }, 'both land in the backlog');
+  const marks = only(s, 'unknown');
+  assert.deepEqual(marks.map((m) => m.shape), ['system:a_brand_new_subtype', 'who_knows']);
+  // Everything that was already on screen is untouched, item for item.
+  assert.deepEqual(kinds(s).filter((k) => k !== 'unknown'), kinds(before));
+  assert.deepEqual(s.items.slice(0, before.items.length), before.items, 'earlier items are the same objects');
+  assert.deepEqual(s.live, before.live, 'no live flag moved');
+});
+
+test('a run of the same undecided shape merges instead of flooding the transcript', () => {
+  let s = initialState();
+  for (let i = 0; i < 5; i++) s = reduce(s, { type: 'chatty_new_thing' }, { isHistory: true });
+  const marks = only(s, 'unknown');
+  assert.equal(marks.length, 1, 'one marker, not five');
+  assert.equal(marks[0].count, 5);
+  assert.deepEqual(s.unhandled, { chatty_new_thing: 5 }, 'the count is still exact');
+});
+
+test('an unhandled content block is counted but never marked — the message itself rendered', () => {
+  const s = reduce(initialState(), {
+    type: 'assistant',
+    message: { content: [{ type: 'text', text: 'hi' }, { type: 'redacted_thinking', data: 'zz' }] },
+  }, { isHistory: true });
+  assert.deepEqual(kinds(s), ['prose'], 'the prose is there and no marker was added');
+  assert.deepEqual(s.unhandled, { 'block:redacted_thinking': 1 });
+});
+
+test('every shape the reducer branches on is declared handled, and vice versa', () => {
+  // The reducer's `case` labels and src/wire-shape.ts are two lists that must not drift. Read the
+  // source rather than trusting a hand-kept copy: a new branch added without a rule would
+  // otherwise render fine and still be reported as an unadapted shape by shape-report.
+  const src = fs.readFileSync(path.join(here, '../web/src/model.ts'), 'utf8');
+  const systemSubtypes = src.slice(src.indexOf('function system(')).match(/case '([a-z_]+)'/g) ?? [];
+  for (const m of systemSubtypes) {
+    const shape = `system:${m.slice(6, -1)}`;
+    assert.equal(verdictOf(shape), 'handled', `${shape} has a reducer branch but is not declared handled`);
+  }
+  for (const [shape, rule] of Object.entries(SHAPES)) {
+    if (rule.verdict === 'ignored') assert.ok(rule.why, `${shape} is ignored without saying why`);
+  }
 });
 
 // ── shapes a real 6298-event export proved were being dropped (docs/HISTORY-EXPORT.md) ──

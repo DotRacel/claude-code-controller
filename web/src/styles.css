@@ -395,6 +395,16 @@ textarea { font: inherit; }
 .divider { display: flex; align-items: center; gap: 10px; color: var(--muted); font: 400 11.5px/1 var(--mono); }
 .divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: var(--line); }
 
+/* A payload whose shape has no renderer yet (web/src/render/phone.tsx). The quietest thing in the
+   transcript on purpose — a note for whoever maintains this, not news for whoever is reading the
+   conversation — but never invisible: a gap you cannot see is a gap nobody reports. Mono because
+   the text IS an identifier (the shape key `npm run shape-report` lists), and `break-all` because
+   a long mcp shape must wrap rather than widen the scroller. */
+.unknown-chip {
+  font: 400 11.5px/1.45 var(--mono); color: var(--text-3); opacity: .72;
+  padding: 2px 8px; text-align: center; word-break: break-all;
+}
+
 /* status / error lines */
 .status-line { text-align: center; font: 400 13px/1.5 var(--sans); color: var(--muted); padding: 0 8px; }
 .error-card { border: 1px solid rgba(224, 122, 95, .28); background: var(--tint-danger); border-radius: var(--radius-card); padding: 12px 13px; }

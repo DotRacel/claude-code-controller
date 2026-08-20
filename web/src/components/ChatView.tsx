@@ -13,7 +13,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ControlSocket, SessionView, Connection, PermissionAnswer } from '../ws.ts';
 import { reduce, initialState, localSend, markQuestionAnswered, clearPermission, turnActiveIn, type TranscriptState, type ToolCall } from '../model.ts';
-import { ItemView, type TranscriptHandlers } from './Transcript.tsx';
+import { ItemView, type ItemActions } from './Transcript.tsx';
+import { phoneRenderers } from '../render/phone.tsx';
 import { Composer } from './Composer.tsx';
 import { PermissionSheet, OutputSheet, MenuSheet } from './Sheets.tsx';
 import { toolDisplayName, blobUrl } from '../tools.ts';
@@ -121,7 +122,7 @@ export function ChatView({ session, sock, connection, onBack, registerEvent, reg
 
   const offline = connection !== 'online' || session.status !== 'active';
 
-  const handlers: TranscriptHandlers = useMemo(() => ({
+  const handlers: ItemActions = useMemo(() => ({
     onOpenOutput: (call) => setOutput(call),
     onAnswerQuestion: (item, answers, freeform) => {
       const updatedInput: Record<string, unknown> = { questions: item.questions, answers };
@@ -189,7 +190,7 @@ export function ChatView({ session, sock, connection, onBack, registerEvent, reg
         }}
       >
         {state.items.map((it, i) => (
-          <ItemView key={it.id} it={it} isLast={i === state.items.length - 1} h={handlers} />
+          <ItemView key={it.id} it={it} isLast={i === state.items.length - 1} h={handlers} renderers={phoneRenderers} />
         ))}
         {/* Offline, nothing is running here to report — a spinner would just keep promising work
             that no connected claude is doing. */}

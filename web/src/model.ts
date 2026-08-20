@@ -15,13 +15,16 @@
  *  - `assistant` text also arrives token-by-token as `stream_event` beforehand. The final
  *    message replaces the streamed draft in place rather than appending a duplicate.
  *
- * Event shapes: docs/EVENTS.md. Unknown types are no-ops by design — a new `system` subtype
- * must never break the transcript.
+ * Event shapes: docs/EVENTS.md. A new `system` subtype must never break the transcript — but it
+ * must not vanish either, which is what "unknown types are no-ops" used to mean here. Every
+ * payload is now gated on a declared verdict (src/wire-shape.ts): declared noise is dropped for
+ * free, and anything undecided is counted in `unhandled` and marked in the transcript.
  */
 import { takeVisibleUserTexts } from './transcript.ts';
 import { toolArg, HIDDEN_TOOLS, QUESTION_TOOL } from '../../src/tool-summary.ts';
 import { isPushNotificationToolUse } from '../../src/push-event.ts';
 import { imageAttachmentsOf, toolResultText, type ImageAttachment } from '../../src/image-blob.ts';
+import { shapeOf, verdictOf, unknownBlockTypes } from '../../src/wire-shape.ts';
 
 /** Task tools that mutate the list render as a checklist card, not as a tool row. */
 export const TODO_TOOLS = new Set(['TaskCreate', 'TaskUpdate']);
@@ -77,6 +80,13 @@ export type Item =
   | { kind: 'status'; id: number; text: string }
   /** A hard break in the conversation: /clear, a compaction, the worker going away. */
   | { kind: 'divider'; id: number; label: string }
+  /**
+   * A payload whose shape nobody has decided about yet (src/wire-shape.ts). It renders as a faint
+   * marker rather than nothing at all: the transcript must never silently skip a beat, because a
+   * gap you cannot see is a gap nobody reports. `count` merges a run of the same shape so one
+   * chatty unknown subtype cannot flood the transcript.
+   */
+  | { kind: 'unknown'; id: number; shape: string; count: number }
   | { kind: 'error'; id: number; title: string; detail?: string };
 
 export interface Live {
@@ -109,6 +119,13 @@ export interface TranscriptState {
   pendingWeb: string[];
   /** Task* state accumulated across the session; snapshotted into each todo card. */
   todos: TodoTask[];
+  /**
+   * shape → how many payloads of it this session could not turn into anything (`unknown` in
+   * src/wire-shape.ts), including content-block types inside an otherwise-rendered message. This
+   * is the per-session view of the same backlog `npm run shape-report` reads out of the database,
+   * and it is what test/model.test.ts asserts on instead of "unknown types are inert".
+   */
+  unhandled: Record<string, number>;
 }
 
 export const initialState = (): TranscriptState => ({
@@ -118,6 +135,7 @@ export const initialState = (): TranscriptState => ({
   index: {},
   pendingWeb: [],
   todos: [],
+  unhandled: {},
 });
 
 /** A non-empty string, or undefined — for payload fields that are sometimes present and empty. */
@@ -250,7 +268,23 @@ function closeOpenPermission(d: Draft, toolUseId: string): void {
 // ── the reducer ──
 export function reduce(state: TranscriptState, payload: any, opts: { isHistory: boolean } = { isHistory: false }): TranscriptState {
   if (!payload || typeof payload !== 'object') return state;
+
+  /*
+   * The verdict is decided BEFORE dispatching, not in the default arm of each switch. That is what
+   * makes src/wire-shape.ts the gate rather than a description: `system:something_new` used to be
+   * swallowed by system()'s own `default: return d` — one level below where anything was watching
+   * — and the `system` subtype is exactly where new wire shapes show up. Now nothing reaches a
+   * branch without a declared decision, and the two lists are held together by a test
+   * ('every shape the reducer branches on is declared handled').
+   */
+  const shape = shapeOf(payload);
+  const verdict = verdictOf(shape);
+  // Declared noise: the ORIGINAL state, identity included. Load-bearing, not tidiness — ChatView
+  // reduces with `setState((prev) => reduce(prev, payload))`, so a fresh object per keep_alive
+  // would re-render the whole transcript on every heartbeat.
+  if (verdict === 'ignored') return state;
   const d = draftOf(state);
+  if (verdict === 'unknown') return markUnknown(d, shape);
   const ts = timeOf(payload);
 
   switch (payload.type) {
@@ -262,8 +296,35 @@ export function reduce(state: TranscriptState, payload: any, opts: { isHistory: 
     case 'stream_event': return streamEvent(d, payload, opts.isHistory);
     case 'control_cancel_request': return controlCancel(d, payload);
     case 'conversation_reset': return conversationReset(d);
-    default: return state; // keep_alive, control_response echo, anything new
+    // Unreachable while SHAPES and this switch agree, which a test enforces. If they ever drift,
+    // failing closed here (as an undecided shape) beats rendering nothing.
+    default: return markUnknown(d, shape);
   }
+}
+
+/**
+ * Nobody has decided what to do with this shape yet. It is counted for the backlog and marked in
+ * the transcript — never silently dropped, because a gap you cannot see is a gap nobody reports —
+ * and never allowed to disturb anything already rendered.
+ */
+function markUnknown(d: Draft, shape: string): TranscriptState {
+  noteUnknown(d, shape);
+  const last = d.items[d.items.length - 1];
+  // Merge a run of the same shape rather than stacking identical markers.
+  if (last?.kind === 'unknown' && last.shape === shape) {
+    d.items[d.items.length - 1] = { ...last, count: last.count + 1 };
+  } else {
+    push(d, { kind: 'unknown', shape, count: 1 });
+  }
+  return d;
+}
+
+/**
+ * Record a shape we could not render. Cloned on write because `draftOf` shares the map with the
+ * previous state — this is the one field that survives untouched through most reductions.
+ */
+function noteUnknown(d: Draft, shape: string): void {
+  d.unhandled = { ...d.unhandled, [shape]: (d.unhandled[shape] ?? 0) + 1 };
 }
 
 function system(d: Draft, p: any): TranscriptState {
@@ -371,7 +432,10 @@ function system(d: Draft, p: any): TranscriptState {
       push(d, { kind: 'error', title: String(p.subtype).replace(/_/g, ' '), detail: typeof p.message === 'string' ? p.message : undefined });
       return d;
     default:
-      return d; // forward-compatible no-op
+      // Unreachable: reduce() gates on the declared verdict, so a subtype with no rule in
+      // src/wire-shape.ts never gets this far — it is counted and marked instead of vanishing
+      // here, which is what this arm used to do to every new `system` subtype.
+      return d;
   }
 }
 
@@ -379,6 +443,10 @@ function assistant(d: Draft, p: any, ts: number | undefined, isHistory: boolean)
   const content = p.message?.content;
   if (!Array.isArray(content)) return d;
   if (!isHistory) d.live.busy = true;
+  // A block type nobody handles (`redacted_thinking`, say) is counted but NOT marked in the
+  // transcript: the message it arrived in did render, so a marker would claim a gap where there
+  // is only a missing detail. The count is what puts it in the backlog.
+  for (const t of unknownBlockTypes(content)) noteUnknown(d, `block:${t}`);
   for (const b of content) {
     if (!b || typeof b !== 'object') continue;
     // Blocks arrive in the order the model produced them, so the last one wins: a message that
@@ -433,8 +501,13 @@ function user(d: Draft, p: any, ts: number | undefined, isHistory: boolean): Tra
   }
   const content = p.message?.content;
   if (Array.isArray(content)) {
+    for (const t of unknownBlockTypes(content)) noteUnknown(d, `block:${t}`);
     for (const b of content) {
       if (b?.type !== 'tool_result' || typeof b.tool_use_id !== 'string') continue;
+      // …and one level deeper: a tool_result's own content carries text, images, and whatever
+      // else a future tool returns. toolResultText renders those as a placeholder, so the count
+      // is the only thing that tells us they exist.
+      for (const t of unknownBlockTypes(b.content)) noteUnknown(d, `block:tool_result.${t}`);
       const id = b.tool_use_id;
       // Not JSON.stringify: a `Read` of an image returns an image block, and stringifying it
       // dumped ~600 KB of base64 into the card. Text and images are pulled apart instead.
