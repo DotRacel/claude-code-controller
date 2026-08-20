@@ -8,12 +8,13 @@
  *  - only the newest item animates in; earlier ones never re-animate on re-render (0c)
  *  - a tool card is one element to a screen reader ("Bash, npm test, failed, double-tap …")
  */
-import { memo, useRef, useState } from 'react';
+import { Fragment, memo, useRef, useState } from 'react';
 import type { Item, ToolCall, TodoTask, Question } from '../model.ts';
-import { toolDisplayName, toolArg, splitPath, argIsPath, resultLine } from '../tools.ts';
+import type { ImageAttachment } from '../../../src/image-blob.ts';
+import { toolDisplayName, toolArg, splitPath, argIsPath, resultLine, byteLabel, imageKindLabel, durationLabel } from '../tools.ts';
 import { renderMarkdown } from '../md.ts';
 import { haptic } from '../haptics.ts';
-import { Check, Alert, Brain, ClaudeMark } from '../icons.tsx';
+import { Check, Alert, Brain, ClaudeMark, Picture } from '../icons.tsx';
 
 const LONG_PRESS_MS = 400;
 /**
@@ -26,6 +27,12 @@ const SCROLL_SLOP_PX = 10;
 export interface TranscriptHandlers {
   onOpenOutput: (call: ToolCall) => void;
   onAnswerQuestion: (item: Extract<Item, { kind: 'question' }>, answers: Record<string, string>, freeform?: string) => void;
+  /**
+   * Where to load a tool's image from — injected because only the view knows the session id, and
+   * because it keeps the components free of the base64-vs-reference distinction. Returns
+   * undefined when an attachment cannot be resolved at all.
+   */
+  imageUrl: (att: ImageAttachment) => string | undefined;
 }
 
 export const ItemView = memo(function ItemView({ it, isLast, h }: { it: Item; isLast: boolean; h: TranscriptHandlers }) {
@@ -48,23 +55,19 @@ export const ItemView = memo(function ItemView({ it, isLast, h }: { it: Item; is
       // A textless block carries nothing to read, so it renders nothing at all.
       return it.text.trim() ? <ThinkingView it={it} cls={cls} /> : null;
     case 'tools':
-      return <ToolGroup calls={it.calls} cls={cls} onOpen={h.onOpenOutput} />;
+      return <ToolGroup calls={it.calls} cls={cls} h={h} />;
     case 'todo':
       return <TodoCard tasks={it.tasks} cls={cls} />;
     case 'question':
       return <QuestionCard it={it} cls={cls} onAnswer={h.onAnswerQuestion} />;
     case 'bgtask':
-      return (
-        <div className={`bgtask${it.status === 'failed' ? ' failed' : ''} ${cls ?? ''}`}>
-          <span className={`dot ${it.status === 'running' ? 'run' : it.status === 'failed' ? 'off' : 'on'}`} />
-          <div className="bgtask-text">
-            <div className="t1">{it.description}</div>
-            <div className="t2">后台任务 · {it.status === 'running' ? 'running…' : it.status === 'failed' ? '失败' : '完成'}</div>
-          </div>
-        </div>
-      );
+      return <BgTaskCard it={it} cls={cls} />;
     case 'status':
       return <div className={`status-line ${cls ?? ''}`}>{it.text}</div>;
+    case 'divider':
+      // /clear, a compaction, or the worker going away: the turns above it belong to a
+      // conversation that no longer exists, so the break has to be visible.
+      return <div className={`divider ${cls ?? ''}`}><span>{it.label}</span></div>;
     case 'error':
       return (
         <div className={`error-card ${cls ?? ''}`}>
@@ -94,12 +97,89 @@ function ThinkingView({ it, cls }: { it: Extract<Item, { kind: 'thinking' }>; cl
   );
 }
 
-function ToolGroup({ calls, cls, onOpen }: { calls: ToolCall[]; cls?: string; onOpen: (c: ToolCall) => void }) {
+/**
+ * A background task, with whatever `system:task_progress` has said since it started. Those frames
+ * are the only news a long task ever gives — a workflow can run for minutes between its
+ * `task_started` and its notification — so the card shows the current step, not just a spinner.
+ */
+function BgTaskCard({ it, cls }: { it: Extract<Item, { kind: 'bgtask' }>; cls?: string }) {
+  const running = it.status === 'running';
+  const state = running ? 'running…'
+    : it.status === 'failed' ? '失败'
+    : it.status === 'interrupted' ? '已中断'   // the worker went away mid-task
+    : '完成';
+  const bits = [state, durationLabel(it.ms), it.tools ? `${it.tools} 次工具` : null].filter(Boolean);
+  return (
+    <div className={`bgtask${it.status === 'failed' ? ' failed' : ''} ${cls ?? ''}`}>
+      <span className={`dot ${running ? 'run' : it.status === 'completed' ? 'on' : 'off'}`} />
+      <div className="bgtask-text">
+        <div className="t1">{it.description}</div>
+        <div className="t2">后台任务 · {bits.join(' · ')}</div>
+        {/* Where it got to. Dropped once a task completes (the step it ended on says nothing then),
+            but kept for one that failed or was interrupted — that IS the useful part. */}
+        {it.status !== 'completed' && it.detail && <div className="t3">{it.detail}</div>}
+        {it.status !== 'completed' && it.phases && it.phases.length > 0 && (
+          <div className="t3 phases">{it.phases.join(' › ')}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Images a tool returned. They are NOT loaded with the transcript: the server replaced the base64
+ * with a reference (src/image-blob.ts), so this renders a placeholder and fetches the bytes only
+ * when tapped. An attachment that already carries its data (an unstripped payload, a fixture)
+ * shows immediately — there is nothing left to save by hiding it.
+ */
+function ImageStrip({ images, h }: { images: ImageAttachment[]; h: TranscriptHandlers }) {
+  return (
+    <div className="tool-images">
+      {images.map((att, i) => <ImageAttachmentView key={att.ref ?? i} att={att} url={h.imageUrl(att)} />)}
+    </div>
+  );
+}
+
+function ImageAttachmentView({ att, url }: { att: ImageAttachment; url: string | undefined }) {
+  // Data already in hand renders straight away; a reference waits for a tap.
+  const [show, setShow] = useState(!!att.dataUrl);
+  const [failed, setFailed] = useState(false);
+  const kind = imageKindLabel(att.mediaType);
+  const size = byteLabel(att.bytes);
+  const caption = [kind, size].filter(Boolean).join(' · ');
+
+  if (!url) return <div className="img-att gone">图片已不可用</div>;
+  if (failed) return <div className="img-att gone">图片加载失败 · {caption}</div>;
+  if (!show) {
+    return (
+      <button className="img-att" onClick={() => setShow(true)} aria-label={`加载图片，${caption}`}>
+        {/* An SVG, not an emoji: the self-hosted fonts carry no emoji glyphs, so 🖼 renders as
+            tofu wherever the system font does not supply one. */}
+        <span className="img-icon" aria-hidden="true"><Picture size={14} /></span>
+        <span className="img-meta">{caption}</span>
+        <span className="img-cta">点击加载</span>
+      </button>
+    );
+  }
+  // A new tab is the phone's own image viewer: pinch-zoom and save come for free.
+  return (
+    <a className="img-att-shown" href={url} target="_blank" rel="noreferrer">
+      <img src={url} alt={`工具返回的图片 · ${caption}`} onError={() => setFailed(true)} />
+    </a>
+  );
+}
+
+function ToolGroup({ calls, cls, h }: { calls: ToolCall[]; cls?: string; h: TranscriptHandlers }) {
   const bad = calls.some((c) => c.status === 'error');
   const waiting = calls.some((c) => c.status === 'awaiting');
   return (
     <div className={`tool-group${bad ? ' err' : ''}${waiting ? ' await' : ''} ${cls ?? ''}`}>
-      {calls.map((c) => <ToolRow key={c.toolUseId} call={c} onOpen={onOpen} />)}
+      {calls.map((c) => (
+        <Fragment key={c.toolUseId}>
+          <ToolRow call={c} onOpen={h.onOpenOutput} />
+          {c.images && c.images.length > 0 && <ImageStrip images={c.images} h={h} />}
+        </Fragment>
+      ))}
     </div>
   );
 }

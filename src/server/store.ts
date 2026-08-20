@@ -19,7 +19,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import type { ServerResponse } from 'node:http';
 import {
-  type Pool, type UserRow, upsertEnv, upsertSession, insertEvents, selectHistory, flushActivity,
+  type Pool, type UserRow, upsertEnv, upsertSession, insertEvents, selectHistory, selectEventByUuid, flushActivity,
   loadRecent, loadUsers, insertUser, updateLastLogin,
 } from './db.ts';
 import { userTextsFrom } from '../transcript-text.ts';
@@ -443,6 +443,20 @@ export class Store {
   }
 
   /**
+   * The stored payload behind a blob reference, image data still in it. Kept separate from
+   * historyFor because that path deliberately strips the bytes (src/image-blob.ts) — this is the
+   * one place they are handed back, one image at a time, to whoever owns the session.
+   */
+  async eventByUuid(sessionId: string, uuid: string): Promise<unknown | null> {
+    if (!this.pool) {
+      const h = this.memHistory.get(sessionId) ?? [];
+      for (let i = h.length - 1; i >= 0; i--) if ((h[i] as any)?.uuid === uuid) return h[i];
+      return null;
+    }
+    return selectEventByUuid(this.pool, sessionId, uuid);
+  }
+
+  /**
    * Fold one payload into the session-list digest. Deliberately shallow: it answers "what is
    * this session doing" for a list row, not "what does the transcript look like" (that is the
    * web's reducer). Unknown types are no-ops so a new event type can never break the list.
@@ -450,15 +464,24 @@ export class Store {
   private foldDigest(s: SessionRecord, payload: any): void {
     if (!payload || typeof payload !== 'object') return;
     const d = s.digest;
+    /**
+     * Nothing is in flight any more. Shared by the four events that mean it, because a row stuck
+     * on "running" (or on a pending-approval badge) is the failure mode every one of them causes:
+     * `result`, a post-turn summary, the child shutting down, and a conversation reset.
+     */
+    const settle = (failed = false): void => {
+      d.turnActive = false;
+      if (d.toolStatus === 'running') d.toolStatus = failed ? 'error' : 'ok';
+      s.pendingTools.clear();
+      d.pendingApproval = false;
+    };
     switch (payload.type) {
       case 'system': {
         // A post-turn summary means the turn is over even when no `result` follows it — without
         // this the row (and the phone's activity line, which seeds from it) stays "running".
-        if (payload.subtype === 'post_turn_summary') {
-          d.turnActive = false;
-          if (d.toolStatus === 'running') d.toolStatus = 'ok';
-          s.pendingTools.clear();
-          d.pendingApproval = false;
+        // worker_shutting_down is the blunt version: the child is gone, so no result is coming.
+        if (payload.subtype === 'post_turn_summary' || payload.subtype === 'worker_shutting_down') {
+          settle();
           return;
         }
         if (payload.subtype !== 'init') return;
@@ -505,11 +528,22 @@ export class Store {
         d.pendingApproval = true;
         return;
       }
-      case 'result': {
-        d.turnActive = false;
-        if (d.toolStatus === 'running') d.toolStatus = payload.is_error ? 'error' : 'ok';
+      case 'control_cancel_request': {
+        // The child withdrew a permission request, usually because it was answered in the
+        // terminal. Without this the list keeps its approval badge lit for a request nobody can
+        // answer any more. The cancel carries only `request_id`, and can_use_tool is serialised
+        // one at a time, so clearing the whole pending set is exact in practice.
         s.pendingTools.clear();
         d.pendingApproval = false;
+        return;
+      }
+      case 'conversation_reset': {
+        // /clear or a compaction: whatever the previous conversation was doing is over.
+        settle();
+        return;
+      }
+      case 'result': {
+        settle(!!payload.is_error);
         return;
       }
     }

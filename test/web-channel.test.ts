@@ -21,6 +21,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** A server with the web channel attached, a session, and a fake child on the SSE data-plane. */
 async function withLoop(fn: (ctx: {
   server: ControllerServer;
+  cred: string;
   sid: string;
   ws: WebSocket;
   frames: () => any[];
@@ -48,7 +49,7 @@ async function withLoop(fn: (ctx: {
     await sleep(50);
 
     await fn({
-      server, sid: s.id, ws,
+      server, cred, sid: s.id, ws,
       frames: () => chunks.join('').split('\n').filter((l) => l.startsWith('data: '))
         .map((l) => { try { return JSON.parse(l.slice(6)).payload; } catch { return null; } }).filter(Boolean),
       post: async (payloads) => {
@@ -158,3 +159,72 @@ test('synthetic user messages never become the list preview', async () => {
     assert.equal(server.store.view(server.store.getSession(sid)!).digest.prompt, '真实提示');
   });
 });
+
+/** A real 1x1 PNG. Small, but its base64 is distinctive enough to grep the wire for. */
+const PNG_1PX = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==';
+const imageEvent = (uuid: string) => ({
+  type: 'user', uuid,
+  message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_shot', content: [
+    { type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG_1PX } },
+  ] }] },
+});
+
+test('a phone is never sent image data — not in the backfill, not live', async () => {
+  await withLoop(async ({ server, sid, ws, post }) => {
+    const got: any[] = [];
+    ws.onmessage = (e) => got.push(JSON.parse(String(e.data)));
+
+    // Backfill: the image is already in history when the phone subscribes.
+    await post([imageEvent('uuid-backfill')]);
+    ws.send(JSON.stringify({ type: 'subscribe', sessionId: sid }));
+    await sleep(120);
+    const history = got.find((m) => m.type === 'history');
+    assert.ok(history, 'no history frame arrived');
+    const backfill = JSON.stringify(history);
+    assert.ok(!backfill.includes(PNG_1PX), 'the backfill must not carry base64 image data');
+    assert.ok(backfill.includes('uuid-backfill:0'), 'it carries the reference the card fetches instead');
+
+    // Live: the same must hold for an image that arrives while the phone is watching.
+    got.length = 0;
+    await post([imageEvent('uuid-live')]);
+    await sleep(80);
+    const event = got.find((m) => m.type === 'event');
+    assert.ok(event, 'no live event arrived');
+    const live = JSON.stringify(event);
+    assert.ok(!live.includes(PNG_1PX), 'the live relay must not carry base64 either');
+    assert.ok(live.includes('uuid-live:0'));
+
+    // Stripping happens on the way out only: storage still holds the real image.
+    const stored = JSON.stringify(await server.store.historyFor(sid));
+    assert.ok(stored.includes(PNG_1PX), 'storage must keep the payload verbatim');
+  });
+});
+
+test('a phone can fetch the image behind the reference it was given', async () => {
+  await withLoop(async ({ server, cred, sid, ws, post }) => {
+    const got: any[] = [];
+    ws.onmessage = (e) => got.push(JSON.parse(String(e.data)));
+    await post([imageEvent('uuid-roundtrip')]);
+    ws.send(JSON.stringify({ type: 'subscribe', sessionId: sid }));
+    await sleep(120);
+
+    // Take the reference out of the transcript exactly as the card does.
+    const history = got.find((m) => m.type === 'history');
+    const block = history.events
+      .flatMap((p: any) => (Array.isArray(p?.message?.content) ? p.message.content : []))
+      .find((b: any) => b?.type === 'tool_result')
+      .content.find((b: any) => b?.type === 'image');
+    assert.equal(block.source.type, 'blob_ref');
+    assert.ok(block.source.bytes > 0);
+
+    // …and load it the way an <img> would: same origin, cookie only, no Authorization header.
+    const url = `${server.baseUrl}/v1/blob?session=${encodeURIComponent(sid)}&ref=${encodeURIComponent(block.source.ref)}`;
+    const r = await fetch(url, { headers: { cookie: `ccc_credential=${encodeURIComponent(cred)}` } });
+    assert.equal(r.status, 200);
+    assert.equal(r.headers.get('content-type'), 'image/png');
+    const bytes = Buffer.from(await r.arrayBuffer());
+    assert.deepEqual(bytes, Buffer.from(PNG_1PX, 'base64'), 'the bytes must survive the round trip');
+    assert.equal(bytes.length, block.source.bytes, 'the size the card showed was the real one');
+  });
+});
+

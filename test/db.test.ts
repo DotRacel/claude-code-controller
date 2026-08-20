@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 import { Store } from '../src/server/store.ts';
 import { createPool, ensureSchema, selectHistory, type Pool } from '../src/server/db.ts';
 import { createControllerServer } from '../src/server/index.ts';
+import { resolveImageBlob } from '../src/image-blob.ts';
 
 const URL = process.env.DATABASE_URL;
 const skip = URL ? false : 'DATABASE_URL not set (docker compose up -d db)';
@@ -95,6 +96,41 @@ test('transcript persists and replays oldest-first', { skip }, async () => {
   const h = (await b.historyFor(s.id)) as any[];
   assert.deepEqual(h.map((e) => e.type), ['user', 'assistant', 'result'], 'chronological');
   assert.equal(h[0].message.content, 'one', 'jsonb round-trips the payload');
+  await b.close();
+});
+
+test('an image blob stays resolvable by its payload uuid', { skip }, async () => {
+  const pool = await db();
+  // The blob route resolves `<uuid>:<n>` against stored payloads, so the lookup needs an index —
+  // otherwise every tapped thumbnail scans the session's history.
+  const idx = await pool.query(
+    `select indexname from pg_indexes where schemaname = $1 and tablename = 'events'`, [TEST_SCHEMA],
+  );
+  assert.ok(idx.rows.some((r: any) => r.indexname === 'events_uuid_idx'), 'no index for the blob lookup');
+
+  const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==';
+  const a = new Store({ pool });
+  const s = await a.createReplSession(CRED, { dir: '/x' });
+  await a.appendEvents(s.id, [
+    { type: 'user', uuid: 'uuid-with-image', message: { role: 'user', content: [
+      { type: 'tool_result', tool_use_id: 't1', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG } }] },
+    ] } },
+    { type: 'user', uuid: 'uuid-plain', message: { role: 'user', content: 'no image here' } },
+  ]);
+  await a.close();
+
+  // A restart must not lose the bytes: they are what the phone fetches when a thumbnail is tapped.
+  const b = new Store({ pool });
+  await b.load();
+  const found = await b.eventByUuid(s.id, 'uuid-with-image');
+  assert.ok(found, 'the payload behind a blob reference went missing');
+  assert.deepEqual(resolveImageBlob(found, 0), { data: PNG, mediaType: 'image/png' });
+  assert.equal(resolveImageBlob(found, 1), null, 'there is no second image in that payload');
+  assert.equal(await b.eventByUuid(s.id, 'uuid-nobody-has'), null);
+
+  // A reference is scoped to its session, so one account's uuid cannot read another's transcript.
+  const other = await b.createReplSession(CRED, { dir: '/y' });
+  assert.equal(await b.eventByUuid(other.id, 'uuid-with-image'), null, 'a reference must not cross sessions');
   await b.close();
 });
 

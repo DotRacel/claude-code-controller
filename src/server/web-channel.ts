@@ -8,11 +8,13 @@
  * a token belonging to no account never gets a socket at all.
  */
 import crypto from 'node:crypto';
-import type { Server, IncomingMessage } from 'node:http';
+import type { Server } from 'node:http';
 import type { Duplex } from 'node:stream';
 import type { Store } from './store.ts';
 import type { ServerEvent, ControllerServer, PermissionDecision } from './index.ts';
+import { cookieCredential } from './index.ts';
 import { pushNotificationFrom } from '../push-event.ts';
+import { stripImageBlobs } from '../image-blob.ts';
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const acceptKey = (k: string) => crypto.createHash('sha1').update(k + WS_GUID).digest('base64');
@@ -49,16 +51,6 @@ function decisionFrom(m: any): PermissionDecision {
   }
   if (typeof m?.message === 'string' && m.message.trim()) d.message = m.message.slice(0, 2000);
   return d;
-}
-
-function cookieCredential(req: IncomingMessage): string | undefined {
-  const raw = req.headers.cookie;
-  if (!raw) return undefined;
-  for (const part of raw.split(';')) {
-    const [k, ...v] = part.trim().split('=');
-    if (k === 'ccc_credential') return decodeURIComponent(v.join('='));
-  }
-  return undefined;
 }
 
 export function attachWebChannel(server: Server, api: WebApi, store: Store) {
@@ -120,7 +112,10 @@ export function attachWebChannel(server: Server, api: WebApi, store: Store) {
           // Subscribe first (so nothing is dropped), buffer, backfill, then drain.
           ws.subscribed = m.sessionId;
           ws.pending = [];
-          const events = await store.historyFor(m.sessionId);
+          // Image data is replaced by a `<uuid>:<n>` reference here and fetched on demand from
+          // /v1/blob — a real session measured 14.7 MB of base64 across 39 screenshots, and a
+          // phone reopening it would have downloaded all of them to draw thumbnails.
+          const events = (await store.historyFor(m.sessionId)).map(stripImageBlobs);
           ws.send({ type: 'history', sessionId: m.sessionId, events });
           const buffered = ws.pending;
           ws.pending = null;
@@ -149,11 +144,13 @@ export function attachWebChannel(server: Server, api: WebApi, store: Store) {
     handleEvent(e: ServerEvent) {
       if (e.type === 'claude.event') {
         const note = pushNotificationFrom(e.payload);
+        // Stripped once for the whole fan-out, not per socket — same reason as the backfill.
+        const payload = stripImageBlobs(e.payload);
         for (const ws of socks) {
           if (ws.credential !== e.credential) continue;
           if (ws.subscribed === e.sessionId) {
-            if (ws.pending) ws.pending.push(e.payload); // mid-backfill: keep the order
-            else ws.send({ type: 'event', sessionId: e.sessionId, payload: e.payload });
+            if (ws.pending) ws.pending.push(payload); // mid-backfill: keep the order
+            else ws.send({ type: 'event', sessionId: e.sessionId, payload });
           } else if (note) ws.send({ type: 'notify', sessionId: e.sessionId, message: note.message, status: note.status, ready: note.ready });
         }
       } else if ('credential' in e && (e as any).credential) {

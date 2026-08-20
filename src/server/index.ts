@@ -18,6 +18,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { Store } from './store.ts';
 import type { Pool } from './db.ts';
+import { parseBlobRef, resolveImageBlob } from '../image-blob.ts';
 
 export type ServerEvent =
   | { type: 'env.register'; envId: string; credential: string; body: any }
@@ -71,6 +72,22 @@ function readBody(req: http.IncomingMessage): Promise<string> {
     req.on('error', () => resolve(b));
   });
 }
+/**
+ * The SPA's credential cookie. Exported because two entry points need it: the WebSocket upgrade
+ * (web-channel.ts) and the blob route — an `<img>` cannot set an Authorization header, so a
+ * browser-loaded image authenticates with the cookie it already has. `SameSite=Lax` (set in
+ * web/src/ws.ts) is what keeps a cross-site `<img>` from carrying it.
+ */
+export function cookieCredential(req: http.IncomingMessage): string | undefined {
+  const raw = req.headers.cookie;
+  if (!raw) return undefined;
+  for (const part of raw.split(';')) {
+    const [k, ...v] = part.trim().split('=');
+    if (k === 'ccc_credential') return decodeURIComponent(v.join('='));
+  }
+  return undefined;
+}
+
 const bearer = (req: http.IncomingMessage): string | undefined => {
   const h = req.headers.authorization;
   return h && h.startsWith('Bearer ') ? h.slice(7) : undefined;
@@ -81,6 +98,8 @@ const bearer = (req: http.IncomingMessage): string | undefined => {
 export const USERNAME_RE = /^[a-zA-Z0-9_-]{3,32}$/;
 export const MIN_PASSWORD = 8;
 /** Failed logins before a username is locked out, and for how long. */
+/** Raster types the blob route serves under their own content-type. SVG is out: it can script. */
+const SAFE_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif']);
 const LOGIN_MAX_FAILS = 5;
 const LOGIN_LOCK_MS = 60_000;
 
@@ -312,6 +331,41 @@ export async function createControllerServer(opts: CreateOpts = {}): Promise<Con
     // /v1/sessions — bridge session metadata (createBridgeSession)
     if (method === 'POST' && p === '/v1/sessions') return json(200, { id: 'cses-' + crypto.randomBytes(5).toString('hex') });
     if (/^\/v1\/sessions\/[^/]+(\/archive)?$/.test(p)) return json(200, {});
+
+    // ── web client: transcript image blobs ──
+    /**
+     * GET /v1/blob?session=<id>&ref=<payload uuid>:<n> — the image bytes the history backfill
+     * deliberately left out (src/image-blob.ts). Owner-only, and scoped to the session the
+     * reference came from, so a guessed uuid cannot read another account's transcript.
+     */
+    if (method === 'GET' && p === '/v1/blob') {
+      // Bearer for programmatic callers, cookie for the <img> the phone renders.
+      const t = bearer(req) ?? cookieCredential(req);
+      const credential = t && store.userByToken(t) ? t : undefined;
+      if (!credential) return noAuth();
+      const sid = url.searchParams.get('session') ?? '';
+      const ref = parseBlobRef(url.searchParams.get('ref'));
+      if (!sid || !ref) return json(400, { error: { type: 'bad_blob_ref' } });
+      const session = store.getSession(sid);
+      if (!session) return json(404, { error: { type: 'bad_session' } });
+      if (session.credential !== credential) return json(403, { error: { type: 'bad_session' } });
+      const payload = await store.eventByUuid(sid, ref.uuid);
+      const blob = payload ? resolveImageBlob(payload, ref.index) : null;
+      if (!blob) return json(404, { error: { type: 'blob_not_found' } });
+      const bytes = Buffer.from(blob.data, 'base64');
+      // The payload's own media type decides nothing on its own: it comes from the worker, and
+      // serving `text/html` (or an SVG, which can script) from our own origin would be an XSS
+      // hole. Anything not a known raster image is handed back as an opaque download.
+      const safe = SAFE_IMAGE_TYPES.has(blob.mediaType);
+      res.statusCode = 200;
+      res.setHeader('content-type', safe ? blob.mediaType : 'application/octet-stream');
+      if (!safe) res.setHeader('content-disposition', 'attachment');
+      res.setHeader('content-length', String(bytes.length));
+      res.setHeader('x-content-type-options', 'nosniff');
+      // A stored payload never changes, so its bytes are addressable forever.
+      res.setHeader('cache-control', 'private, max-age=31536000, immutable');
+      return res.end(bytes);
+    }
 
     // ── static SPA (non-API) ──
     if (opts.staticDir && (method === 'GET' || method === 'HEAD')) return serveStatic(opts.staticDir, p, res);

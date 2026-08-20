@@ -27,6 +27,26 @@ function editDelta(input: any): { add: number; del: number } | null {
   return { add, del };
 }
 
+/** `310 KB` — the size a not-yet-loaded image announces. */
+export function byteLabel(n: number | undefined): string {
+  if (!n || n < 0) return '';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** `PNG` — the type shown on the placeholder, from the block's media type. */
+export function imageKindLabel(mediaType: string | undefined): string {
+  if (!mediaType) return '图片';
+  const sub = mediaType.split('/')[1] ?? '';
+  return sub ? sub.replace('+xml', '').toUpperCase() : '图片';
+}
+
+/** Where the bytes of a stripped image live. Built here so the components stay presentational. */
+export function blobUrl(sessionId: string, ref: string): string {
+  return `/v1/blob?session=${encodeURIComponent(sessionId)}&ref=${encodeURIComponent(ref)}`;
+}
+
 export function durationLabel(ms: number | undefined): string | null {
   if (!ms || ms < 0) return null;
   if (ms < 1000) return `${ms}ms`;
@@ -50,6 +70,10 @@ export function resultLine(call: ToolCall): ResultLine | null {
   if (call.status === 'error') {
     return { text: firstLine(out) || '失败', isError: true };
   }
+  // An image-only result (a `Read` of a screenshot) has no text to count lines of; the images
+  // themselves render under the row, so the line just says what arrived.
+  const images = call.images?.length ?? 0;
+  if (images && !out.trim()) return { text: images > 1 ? `${images} 张图片` : '图片' };
   switch (call.name) {
     case 'Read': {
       const n = countLines(out);

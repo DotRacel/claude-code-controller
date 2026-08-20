@@ -34,6 +34,32 @@ Four things the design doc could not have known, found by reading real captured 
   streamed draft is replaced in place, never appended twice) and the busy state is carried by the
   activity line instead of a caret.
 
+**Six more, found by exporting a real deployment's history** (6298 events, 3 sessions) and
+replaying it through the reducer — `npm run export-history && npm run history-audit`, which reports
+every payload shape the front-end turns into nothing (docs/HISTORY-EXPORT.md). Seven shapes were
+being dropped silently:
+
+- **A `tool_result` is not always text.** A `Read` of a screenshot returns an image block, and
+  stringifying it put **14.7 MB of base64 across 39 images** into chat bubbles. Text and images are
+  separated now (`src/image-blob.ts`); the bytes stay on the server behind a `<uuid>:<n>` reference
+  and the card fetches one from `/v1/blob` when tapped. Stripping happens on the way out, so
+  history already in the database benefits without a migration.
+- **Half the wire is `tool_use_result`** — Claude's own record of each call, which nothing here
+  reads: 20.2 MB of 40.5 MB, including a *second* full copy of every screenshot. Stripping both
+  copies took the same history from 40.5 MB to 11.1 MB (−72.5%).
+- **A long background task reports only through `system:task_progress`**, and `system:task_updated`
+  can be the only event that says it finished. Handling neither left task cards spinning forever;
+  the card now shows the current step, the workflow phases, and its elapsed time.
+- **`control_cancel_request` withdraws a permission request** — usually because it was answered in
+  the terminal. Ignoring it left the phone holding a sheet whose answer the worker would reject,
+  and the session list with an approval badge nobody could clear.
+- **`conversation_reset` (a `/clear`) and `system:worker_shutting_down` end a turn** as firmly as a
+  `result` does. Both now draw a break in the transcript, and both are turn boundaries for
+  `turnActiveIn` and the server's digest — otherwise reopening the session shows a Stop button for
+  a turn nobody will ever finish.
+- **The permission sheet's reason is `description`, not `decision_reason`.** The schema name was
+  never on the wire, so the "why are you being asked" line was always empty.
+
 `permission_response` over `/ws/client` now carries the worker's own contract —
 `{behavior, updatedInput?, updatedPermissions?, message?}` — which is what makes "Always allow"
 work: the phone echoes back a `permission_suggestions` entry rather than inventing a rule (it

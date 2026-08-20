@@ -64,11 +64,22 @@ decides ownership.
   `capabilities`. **Use this to seed the web UI** (available tools, current model/mode).
 - `post_turn_summary` ✓ — `{summarizes_uuid, status_category, status_detail, needs_action}`; a
   short human status of the turn ("replied with hi as requested").
-- `task_summary` ✓ · `task_started` ○ · `task_progress` ○ · `task_updated` ○ ·
-  `task_notification` ○ — background-task lifecycle.
+- `task_started` ✓ (`{task_id, task_type:"local_bash"|"local_agent", description, prompt,
+  tool_use_id, workflow_name}`) · `task_progress` ✓ (`{task_id, description, summary,
+  usage:{tool_uses,duration_ms,total_tokens}, last_tool_name,
+  workflow_progress:[{type:"workflow_phase",index,title}]}`) · `task_updated` ✓
+  (`{task_id, patch:{status,end_time}}`) · `task_notification` ✓ (`{task_id, status, summary,
+  output_file, usage}`) · `task_summary` ○ — background-task lifecycle.
+  Two things a client has to get right: between `task_started` and the notification, a long
+  workflow reports **only** through `task_progress` (a card with no progress is a spinner for
+  minutes), and `task_updated` can be the **only** event that says a task finished.
 - `thinking` ○ · `thinking_tokens` ✓ (`{estimated_tokens, estimated_tokens_delta}`) — reasoning progress.
 - `notification` ○ · `os_notification` ○ · `informational` ○ · `status` ○ — surfaced notices.
 - `api_error` ○ · `api_retry` ○ · `permission_denied` ○ · `permission_retry` ○ — error/retry.
+- `vcs_state_changed` ✓ — `{kind:"commit"|"push", branch, cwd}`; emitted after the agent commits
+  or pushes. The one side effect a reader cannot undo by reading further, so it is worth a line.
+- `worker_shutting_down` ✓ — `{reason:"host_exit"}`; the terminal-side claude is going away. No
+  `result` is coming, so anything still claiming to be in flight has to be wound down.
 - `compact_boundary` ○ · `compact_start`/`compact_progress`/`compact_end` ○ — context compaction.
 - `memory_recall` ○ · `memory_saved` ○ — memory ops.
 - `hook_started`/`hook_progress`/`hook_response`/`stop_hook_summary` ○ — hooks.
@@ -98,6 +109,18 @@ calls; `thinking` blocks are reasoning.
 `isReplay:true` messages are the worker echoing turns into the transcript (including our own sends
 and tool results). Match `tool_result.tool_use_id` back to the `assistant` tool_use.
 
+**`tool_result.content` is not always a string.** A `Read` of an image returns
+`[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"…"}}]` — one
+screenshot is 300–600 KB of base64. Stringifying that block puts megabytes of noise in a chat
+bubble, so text and images have to be pulled apart (`src/image-blob.ts`).
+
+**Every `tool_result` payload also carries `tool_use_result`** — Claude's own record of the call,
+outside `message` and not part of this wire contract: `{interrupted, isImage, stdout, stderr}` for
+Bash, `{filePath, oldString, newString, originalFile, structuredPatch}` for Edit, `{type, file:
+{type, base64|content}}` for Read. Nothing in this project reads it, and it is **half the bytes**:
+across a real 6298-event history it was 20.2 MB of 40.5 MB, including a second full copy of every
+screenshot. The server strips the duplicated image on the way to a browser.
+
 ### `result` — end of a turn ✓
 ```json
 { "type": "result", "subtype": "success", "is_error": false, "stop_reason": "end_turn",
@@ -120,6 +143,22 @@ done; `result` is the final assistant text.
 `can_use_tool` is the permission ask — the web renders a prompt (tool_name + input + why), then we
 reply with a `control_response`. Other child→host subtypes (○): `mcp_message`, `hook_callback`.
 
+### `control_cancel_request` ✓ — a request is withdrawn
+```json
+{ "type": "control_cancel_request", "request_id": "<the control_request's id>", "uuid": "…" }
+```
+The child is taking back a request we may still be showing — in practice the same permission being
+answered in the terminal. It carries **only** `request_id`, so a client has to match on that: the
+sheet must close (and the list badge clear), or the phone keeps offering an answer the worker
+would reject.
+
+### `conversation_reset` ✓ — /clear or a compaction
+```json
+{ "type": "conversation_reset", "new_conversation_id": "…", "session_id": "…", "uuid": "…" }
+```
+The same session continues under a new conversation. The turns above it are history, not context:
+render a break, drop the task list, and treat the turn as over.
+
 ### `keep_alive` ○ — idle heartbeat from the worker; ignore.
 
 ---
@@ -141,12 +180,16 @@ An auto-approved tool (safe, in-workdir) skips steps 2–3. A `deny` short-circu
 
 - **Transcript**: `assistant` text/thinking, `tool_use` (as a tool card), `user` `tool_result`
   (tool output), `result` (final text + cost).
-- **Permission UI**: `control_request:can_use_tool` → modal with `tool_name`, `input`,
-  `decision_reason`, and `permission_suggestions` as one-tap options; reply `control_response`.
+- **Permission UI**: `control_request:can_use_tool` → modal with `tool_name`, `input`, the reason,
+  and `permission_suggestions` as one-tap options; reply `control_response`. The reason arrives in
+  **`description`** — `decision_reason` is the control-schema's name for it and was never seen on
+  the wire, so reading only that leaves the modal with no explanation. Handle
+  `control_cancel_request` too, or the modal outlives the request.
 - **Status chips**: `system:post_turn_summary`, `system:task_*`, `system:thinking_tokens`,
   `system:api_error`/`permission_denied`.
 - **Session bootstrap**: `system:init` → tool list, model, permission mode.
 - **Ignore**: `keep_alive`, our own `control_response` echoed back, unknown `system:*` (log, don't
-  break) — treat unrecognized subtypes as forward-compatible no-ops.
+  break) — treat unrecognized subtypes as forward-compatible no-ops. `test/history-audit.ts`
+  reports which shapes a client is silently dropping (docs/HISTORY-EXPORT.md).
 - **Controls the web can send**: `user` (with `client_platform`), `control_response`,
   and host `control_request` (`interrupt`, `set_permission_mode`, `set_model`).

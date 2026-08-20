@@ -374,6 +374,26 @@ textarea { font: inherit; }
 .bgtask-text { flex: 1; min-width: 0; }
 .bgtask-text .t1 { font: 600 13.5px/1.3 var(--sans); }
 .bgtask-text .t2 { margin-top: 3px; font: 400 11.5px/1.3 var(--mono); color: var(--muted); }
+/* the current step, from system:task_progress — clipped rather than wrapped, so a long agent
+   label cannot grow the card to three lines on a phone */
+.bgtask-text .t3 { margin-top: 3px; font: 400 11.5px/1.3 var(--mono); color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bgtask-text .t3.phases { color: var(--muted); }
+
+/* images a tool returned. The bytes are NOT in the transcript: the placeholder is a button that
+   fetches from /v1/blob on tap (see src/image-blob.ts for why). */
+.tool-images { display: flex; flex-direction: column; gap: 8px; padding: 0 13px 12px; }
+.img-att { display: flex; align-items: center; gap: 8px; width: 100%; padding: 10px 12px; border: 1px dashed var(--line); border-radius: var(--radius-card); background: transparent; color: var(--text-3); font: 400 12px/1.3 var(--mono); text-align: left; }
+.img-att .img-icon { display: flex; flex: none; color: var(--muted); }
+.img-att .img-meta { flex: 1; min-width: 0; }
+.img-att .img-cta { color: var(--accent); flex: none; }
+.img-att.gone { border-style: solid; color: var(--muted); }
+/* the loaded image: full card width, its own aspect ratio, tappable for the phone's viewer */
+.img-att-shown { display: block; border-radius: var(--radius-card); overflow: hidden; border: 1px solid var(--line); }
+.img-att-shown img { display: block; width: 100%; height: auto; }
+
+/* a hard break in the conversation: /clear, a compaction, the worker going away */
+.divider { display: flex; align-items: center; gap: 10px; color: var(--muted); font: 400 11.5px/1 var(--mono); }
+.divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: var(--line); }
 
 /* status / error lines */
 .status-line { text-align: center; font: 400 13px/1.5 var(--sans); color: var(--muted); padding: 0 8px; }

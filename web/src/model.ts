@@ -21,6 +21,7 @@
 import { takeVisibleUserTexts } from './transcript.ts';
 import { toolArg, HIDDEN_TOOLS, QUESTION_TOOL } from '../../src/tool-summary.ts';
 import { isPushNotificationToolUse } from '../../src/push-event.ts';
+import { imageAttachmentsOf, toolResultText, type ImageAttachment } from '../../src/image-blob.ts';
 
 /** Task tools that mutate the list render as a checklist card, not as a tool row. */
 export const TODO_TOOLS = new Set(['TaskCreate', 'TaskUpdate']);
@@ -35,6 +36,12 @@ export interface ToolCall {
   result?: string;
   startedAt?: number;
   endedAt?: number;
+  /**
+   * Images the tool_result carried. `Read` of a screenshot returns an image block, not text, and
+   * stringifying it put megabytes of base64 in the transcript — so the bytes stay on the server
+   * behind a reference (src/image-blob.ts) and the card fetches one when tapped.
+   */
+  images?: ImageAttachment[];
 }
 
 export interface QuestionOption { label: string; description?: string; preview?: string }
@@ -61,8 +68,15 @@ export type Item =
   | { kind: 'tools'; id: number; calls: ToolCall[] }
   | { kind: 'todo'; id: number; tasks: TodoTask[] }
   | { kind: 'question'; id: number; requestId: string; toolUseId?: string; questions: Question[]; answered?: string }
-  | { kind: 'bgtask'; id: number; taskId: string; description: string; status: 'running' | 'completed' | 'failed' }
+  // `detail`/`phases`/`tools`/`ms` come from system:task_progress, which the CLI emits while a
+  // background task runs — without them a task card is a spinner with no news for minutes.
+  // `interrupted` is not a CLI status: it is what a running task becomes when the worker goes
+  // away. Neither 'completed' (it did not finish) nor 'failed' (nothing went wrong) is honest.
+  | { kind: 'bgtask'; id: number; taskId: string; description: string; status: 'running' | 'completed' | 'failed' | 'interrupted';
+      detail?: string; phases?: string[]; tools?: number; ms?: number }
   | { kind: 'status'; id: number; text: string }
+  /** A hard break in the conversation: /clear, a compaction, the worker going away. */
+  | { kind: 'divider'; id: number; label: string }
   | { kind: 'error'; id: number; title: string; detail?: string };
 
 export interface Live {
@@ -106,13 +120,15 @@ export const initialState = (): TranscriptState => ({
   todos: [],
 });
 
+/** A non-empty string, or undefined — for payload fields that are sometimes present and empty. */
+const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v : undefined);
+
 const timeOf = (p: any): number | undefined => {
   const t = p?.timestamp;
   if (typeof t !== 'string') return undefined;
   const ms = Date.parse(t);
   return Number.isFinite(ms) ? ms : undefined;
 };
-const textOf = (c: unknown): string => (typeof c === 'string' ? c : c == null ? '' : JSON.stringify(c));
 
 /** Working copy: items/live are replaced, individual items cloned only when touched. */
 interface Draft extends TranscriptState { items: Item[]; live: Live }
@@ -244,6 +260,8 @@ export function reduce(state: TranscriptState, payload: any, opts: { isHistory: 
     case 'result': return result(d, payload);
     case 'control_request': return controlRequest(d, payload);
     case 'stream_event': return streamEvent(d, payload, opts.isHistory);
+    case 'control_cancel_request': return controlCancel(d, payload);
+    case 'conversation_reset': return conversationReset(d);
     default: return state; // keep_alive, control_response echo, anything new
   }
 }
@@ -292,6 +310,59 @@ function system(d: Draft, p: any): TranscriptState {
         const it = d.items[i];
         if (it.kind === 'bgtask' && it.status === 'running' && !live.has(it.taskId)) d.items[i] = { ...it, status: 'completed' };
       }
+      return d;
+    }
+    case 'task_progress': {
+      // Progress for a task already on screen. It never *creates* a card: a progress frame for a
+      // task whose `task_started` we never saw would render a task nobody asked about.
+      const taskId = String(p.task_id ?? '');
+      const at = d.items.findIndex((i) => i.kind === 'bgtask' && i.taskId === taskId);
+      if (!taskId || at < 0) return d;
+      const it = d.items[at] as Extract<Item, { kind: 'bgtask' }>;
+      if (it.status !== 'running') return d; // a late frame must not revive a finished card
+      const phases = Array.isArray(p.workflow_progress)
+        ? p.workflow_progress.map((x: any) => String(x?.title ?? '')).filter(Boolean)
+        : it.phases;
+      d.items[at] = {
+        ...it,
+        detail: typeof p.description === 'string' && p.description.trim() ? p.description.trim() : it.detail,
+        phases,
+        tools: typeof p.usage?.tool_uses === 'number' ? p.usage.tool_uses : it.tools,
+        ms: typeof p.usage?.duration_ms === 'number' ? p.usage.duration_ms : it.ms,
+      };
+      return d;
+    }
+    case 'task_updated': {
+      // `patch` is a partial task record; only a terminal status changes what the card says.
+      const taskId = String(p.task_id ?? '');
+      const status = p.patch?.status;
+      const at = d.items.findIndex((i) => i.kind === 'bgtask' && i.taskId === taskId);
+      if (!taskId || at < 0 || typeof status !== 'string') return d;
+      const next = status === 'failed' ? 'failed' : status === 'completed' ? 'completed' : 'running';
+      d.items[at] = { ...(d.items[at] as Extract<Item, { kind: 'bgtask' }>), status: next };
+      return d;
+    }
+    case 'vcs_state_changed': {
+      // Emitted after the agent commits or pushes — worth a line, since it is the one kind of
+      // side effect you cannot undo by reading further.
+      const kind = String(p.kind ?? '');
+      const label = kind === 'commit' ? '已提交' : kind === 'push' ? '已推送' : kind ? `git ${kind}` : '';
+      if (!label) return d;
+      const branch = typeof p.branch === 'string' && p.branch ? ` · ${p.branch}` : '';
+      push(d, { kind: 'status', text: `${label}${branch}` });
+      return d;
+    }
+    case 'worker_shutting_down': {
+      // The terminal-side claude is going away: nothing else will answer this session, so the
+      // activity line must stop claiming work is in flight — and neither may a task card, since
+      // the process that was running it went with it.
+      idle(d);
+      for (let i = 0; i < d.items.length; i++) {
+        const it = d.items[i];
+        if (it.kind === 'bgtask' && it.status === 'running') d.items[i] = { ...it, status: 'interrupted' };
+      }
+      const reason = p.reason === 'host_exit' ? '终端已退出' : typeof p.reason === 'string' && p.reason ? String(p.reason) : '';
+      push(d, { kind: 'divider', label: reason ? `会话已断开 · ${reason}` : '会话已断开' });
       return d;
     }
     case 'api_error':
@@ -365,7 +436,10 @@ function user(d: Draft, p: any, ts: number | undefined, isHistory: boolean): Tra
     for (const b of content) {
       if (b?.type !== 'tool_result' || typeof b.tool_use_id !== 'string') continue;
       const id = b.tool_use_id;
-      const body = textOf(b.content);
+      // Not JSON.stringify: a `Read` of an image returns an image block, and stringifying it
+      // dumped ~600 KB of base64 into the card. Text and images are pulled apart instead.
+      const body = toolResultText(b.content);
+      const images = imageAttachmentsOf(b);
       closeOpenPermission(d, id);
 
       const q = d.items.findIndex((i) => i.kind === 'question' && i.toolUseId === id);
@@ -373,7 +447,10 @@ function user(d: Draft, p: any, ts: number | undefined, isHistory: boolean): Tra
 
       const at = d.index[id];
       if (at && at.i < 0) { learnTodoId(d, id, body); continue; } // a Task* call
-      const call = patchCall(d, id, { status: b.is_error ? 'error' : 'ok', result: body, endedAt: ts });
+      const call = patchCall(d, id, {
+        status: b.is_error ? 'error' : 'ok', result: body, endedAt: ts,
+        ...(images.length ? { images } : {}),
+      });
       if (call && d.live.running && call.toolUseId === id) d.live.running = undefined;
     }
   }
@@ -437,9 +514,43 @@ function controlRequest(d: Draft, p: any): TranscriptState {
     toolName: String(req.tool_name ?? 'Tool'),
     displayName: typeof req.display_name === 'string' ? req.display_name : undefined,
     input: req.input,
-    reason: typeof req.decision_reason === 'string' ? req.decision_reason : undefined,
+    // Real requests carry `description`; `decision_reason` is the control-schema's name for the
+    // same thing and was never seen on the wire — reading only that left the sheet with no reason.
+    reason: str(req.description) ?? str(req.decision_reason),
     suggestions: Array.isArray(req.permission_suggestions) ? req.permission_suggestions : [],
   };
+  return d;
+}
+
+/**
+ * The child withdrew a request we may still be showing. In practice this is the same permission
+ * being answered in the terminal: without it the phone keeps a sheet whose answer the worker
+ * would reject, and the tool row stays stuck on "等待你允许…".
+ */
+function controlCancel(d: Draft, p: any): TranscriptState {
+  const requestId = String(p.request_id ?? '');
+  if (!requestId) return d;
+  if (d.live.permission?.requestId === requestId) {
+    const toolUseId = d.live.permission.toolUseId;
+    d.live.permission = undefined;
+    // Back to 'running', not settled: the call may still be executing, and only a tool_result
+    // (or the end of the turn) knows how it ended.
+    if (toolUseId) patchCall(d, toolUseId, { status: 'running' });
+  }
+  const q = d.items.findIndex((i) => i.kind === 'question' && i.requestId === requestId && !i.answered);
+  if (q >= 0) d.items[q] = { ...(d.items[q] as Extract<Item, { kind: 'question' }>), answered: '已在终端处理' };
+  return d;
+}
+
+/**
+ * `/clear` or a compaction: the child started a new conversation under the same session. The old
+ * transcript stays visible (it is what you were reading) but must not read as one conversation
+ * with the next turn — and the task list belongs to the conversation that is gone.
+ */
+function conversationReset(d: Draft): TranscriptState {
+  endTurn(d);
+  d.todos = [];
+  push(d, { kind: 'divider', label: '对话已重置' });
   return d;
 }
 
@@ -503,14 +614,16 @@ export function clearPermission(state: TranscriptState): TranscriptState {
  * Scanning backwards for the last turn boundary is the same rule the server folds into the session
  * digest (src/server/store.ts, foldDigest): `result` — or a `post_turn_summary`, which is emitted
  * once the turn is over and covers the case where no `result` ever arrives — ends a turn, a user
- * or assistant message starts or continues one, everything else is neutral.
+ * or assistant message starts or continues one, everything else is neutral. `worker_shutting_down`
+ * and `conversation_reset` end it too: the child that owed us a result is gone, or has moved on to
+ * a new conversation, and either way reopening the session must not show a Stop button.
  */
 export function turnActiveIn(payloads: unknown[]): boolean {
   for (let i = payloads.length - 1; i >= 0; i--) {
     const p = payloads[i] as any;
     const t = p?.type;
-    if (t === 'result') return false;
-    if (t === 'system' && p?.subtype === 'post_turn_summary') return false;
+    if (t === 'result' || t === 'conversation_reset') return false;
+    if (t === 'system' && (p?.subtype === 'post_turn_summary' || p?.subtype === 'worker_shutting_down')) return false;
     if (t === 'user' || t === 'assistant' || t === 'stream_event') return true;
   }
   return false;

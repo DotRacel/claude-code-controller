@@ -284,6 +284,26 @@ async function main() {
         await sleep(500);
       },
     },
+    {
+      // The shapes a real history export turned up (images, task progress, conversation breaks).
+      // Scrolled to, rather than at the bottom, because the fixture puts them mid-transcript.
+      name: '13-image-and-breaks',
+      setup: async (c) => {
+        await c.eval(`(() => { const b = [...document.querySelectorAll('.session-card')].find(e => e.textContent.includes('racel-dev')); b && b.click(); })()`);
+        await sleep(900);
+        await c.eval(`(() => { const el = document.querySelector('.tool-images'); el && el.scrollIntoView({ block: 'center' }); })()`);
+        await sleep(250);
+      },
+    },
+    {
+      name: '14-bgtask-progress',
+      setup: async (c) => {
+        await c.eval(`(() => { const b = [...document.querySelectorAll('.session-card')].find(e => e.textContent.includes('racel-dev')); b && b.click(); })()`);
+        await sleep(900);
+        await c.eval(`(() => { const el = [...document.querySelectorAll('.bgtask')].find(e => e.querySelector('.t3')); el && el.scrollIntoView({ block: 'center' }); })()`);
+        await sleep(250);
+      },
+    },
     { name: '11-auth-gate', noCredential: true },
     { name: '12-auth-gate-register', noCredential: true, setup: async (c) => {
       await c.eval(`[...document.querySelectorAll('.auth-tabs button')].find(b => b.textContent === '注册')?.click()`);

@@ -16,7 +16,7 @@ import { reduce, initialState, localSend, markQuestionAnswered, clearPermission,
 import { ItemView, type TranscriptHandlers } from './Transcript.tsx';
 import { Composer } from './Composer.tsx';
 import { PermissionSheet, OutputSheet, MenuSheet } from './Sheets.tsx';
-import { toolDisplayName } from '../tools.ts';
+import { toolDisplayName, blobUrl } from '../tools.ts';
 import { Back, Dots, WifiOff, Alert } from '../icons.tsx';
 import { haptic } from '../haptics.ts';
 import { showPushNotification } from '../notify.ts';
@@ -130,6 +130,9 @@ export function ChatView({ session, sock, connection, onBack, registerEvent, reg
       const summary = Object.entries(answers).map(([q, a]) => `${q} → ${a}`).join('\n') || (freeform ?? '已跳过');
       setState((prev) => markQuestionAnswered(prev, item.requestId, summary));
     },
+    // A stripped image resolves to the blob route (the cookie authenticates the <img>); an
+    // unstripped one already carries its own data URL.
+    imageUrl: (att) => att.dataUrl ?? (att.ref ? blobUrl(session.id, att.ref) : undefined),
   }), [session.id, sock]);
 
   const answerPermission = (a: PermissionAnswer) => {

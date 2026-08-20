@@ -60,3 +60,6 @@ create index if not exists sessions_credential_idx on sessions (credential, last
 create unique index if not exists sessions_ingress_token_idx on sessions (ingress_token);
 create index if not exists environments_credential_idx on environments (credential);
 create index if not exists events_session_idx on events (session_id, id);
+-- Lookup path for the blob route: the web holds `<payload uuid>:<n>` references instead of the
+-- base64 image data, and resolving one must not scan a session's whole history.
+create index if not exists events_uuid_idx on events (session_id, (payload->>'uuid'));

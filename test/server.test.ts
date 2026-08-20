@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createControllerServer, type ControllerServer, type ServerEvent } from '../src/server/index.ts';
 import { Store } from '../src/server/store.ts';
+import { stripImageBlobs } from '../src/image-blob.ts';
 
 const auth = (t: string) => ({ Authorization: `Bearer ${t}` });
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -207,3 +208,85 @@ test('POST /bridge resurrects a cse_* id after a server restart (same credential
     assert.equal(server.store.sessionByIngressToken(creds.body.worker_jwt)?.id, 'cse_deadbeef');
   });
 });
+
+// ── /v1/blob: the image bytes the transcript deliberately does not carry ──
+
+/** A real 1x1 PNG, so the route's decode path is exercised rather than mocked. */
+const PNG_1PX = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==';
+
+const imageEvent = (uuid: string, mediaType = 'image/png', data = PNG_1PX) => ({
+  type: 'user', uuid,
+  message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_shot', content: [
+    { type: 'image', source: { type: 'base64', media_type: mediaType, data } },
+  ] }] },
+});
+
+test('the blob route returns the image the history backfill stripped', async () => {
+  await withServer(async (server, _events, CRED) => {
+    await register(server, CRED);
+    const sid = server.store.sessionsForCredential(CRED)[0].id;
+    await server.store.appendEvents(sid, [imageEvent('uuid-shot-1')]);
+
+    const r = await fetch(`${server.baseUrl}/v1/blob?session=${sid}&ref=uuid-shot-1:0`, { headers: auth(CRED) });
+    assert.equal(r.status, 200);
+    assert.equal(r.headers.get('content-type'), 'image/png');
+    assert.equal(r.headers.get('x-content-type-options'), 'nosniff');
+    assert.deepEqual(Buffer.from(await r.arrayBuffer()), Buffer.from(PNG_1PX, 'base64'));
+
+    // Storage keeps the payload verbatim (the export needs the real image)…
+    const history = await server.store.historyFor(sid);
+    assert.ok(JSON.stringify(history).includes(PNG_1PX), 'storage must keep the payload verbatim');
+    // …while what a phone is served carries a reference instead of the bytes.
+    const served = JSON.stringify(history.map(stripImageBlobs));
+    assert.ok(!served.includes(PNG_1PX), 'the transcript must not carry image data');
+    assert.ok(served.includes('uuid-shot-1:0'), 'it carries the reference the card fetches');
+  });
+});
+
+test('a blob belongs to its session, and to nobody else', async () => {
+  await withServer(async (server, _events, CRED) => {
+    await register(server, CRED);
+    const sid = server.store.sessionsForCredential(CRED)[0].id;
+    await server.store.appendEvents(sid, [imageEvent('uuid-shot-2')]);
+    const url = `${server.baseUrl}/v1/blob?session=${sid}&ref=uuid-shot-2:0`;
+
+    assert.equal((await fetch(url)).status, 401, 'an unauthenticated fetch must not read a transcript');
+    const OTHER = await account(server, 'someone-else');
+    assert.equal((await fetch(url, { headers: auth(OTHER) })).status, 403, "another account's session is off limits");
+
+    // The cookie the SPA already holds is accepted, because an <img> cannot send a header.
+    const viaCookie = await fetch(url, { headers: { cookie: `ccc_credential=${encodeURIComponent(CRED)}` } });
+    assert.equal(viaCookie.status, 200);
+  });
+});
+
+test('a blob reference that resolves to nothing is a 404, not a crash', async () => {
+  await withServer(async (server, _events, CRED) => {
+    await register(server, CRED);
+    const sid = server.store.sessionsForCredential(CRED)[0].id;
+    await server.store.appendEvents(sid, [imageEvent('uuid-shot-3')]);
+    const get = (q: string) => fetch(`${server.baseUrl}/v1/blob?${q}`, { headers: auth(CRED) }).then((r) => r.status);
+
+    assert.equal(await get(`session=${sid}&ref=uuid-shot-3:0`), 200);
+    assert.equal(await get(`session=${sid}&ref=uuid-shot-3:7`), 404, 'no seventh image in that payload');
+    assert.equal(await get(`session=${sid}&ref=no-such-uuid:0`), 404);
+    assert.equal(await get(`session=${sid}&ref=not-a-ref`), 400);
+    assert.equal(await get(`session=${sid}&ref=uuid:not-a-number`), 400);
+    assert.equal(await get('ref=uuid-shot-3:0'), 400, 'a ref without a session is unresolvable');
+    assert.equal(await get('session=cse_nope&ref=uuid-shot-3:0'), 404);
+  });
+});
+
+test('a payload claiming a scriptable media type is served as a download', async () => {
+  await withServer(async (server, _events, CRED) => {
+    await register(server, CRED);
+    const sid = server.store.sessionsForCredential(CRED)[0].id;
+    // The media type comes from the worker; serving text/html from our own origin would be XSS.
+    await server.store.appendEvents(sid, [imageEvent('uuid-evil', 'text/html', Buffer.from('<script>alert(1)</script>').toString('base64'))]);
+    const r = await fetch(`${server.baseUrl}/v1/blob?session=${sid}&ref=uuid-evil:0`, { headers: auth(CRED) });
+    assert.equal(r.status, 200);
+    assert.equal(r.headers.get('content-type'), 'application/octet-stream');
+    assert.equal(r.headers.get('content-disposition'), 'attachment');
+  });
+});
+

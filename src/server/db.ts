@@ -200,6 +200,19 @@ export async function insertEvents(pool: Pool, sessionId: string, events: Array<
   );
 }
 
+/**
+ * One event by its payload `uuid`, for the blob route: the transcript the web holds has image
+ * data replaced by a `<uuid>:<n>` reference, and this is how the bytes are found again.
+ * Scoped by session so a reference cannot be used to read another account's history.
+ */
+export async function selectEventByUuid(pool: Pool, sessionId: string, uuid: string): Promise<unknown | null> {
+  const r = await pool.query(
+    `select payload from events where session_id = $1 and payload->>'uuid' = $2 order by id desc limit 1`,
+    [sessionId, uuid],
+  );
+  return r.rows.length ? r.rows[0].payload : null;
+}
+
 /** Newest `limit` events, returned oldest-first (the order the web replays them in). */
 export async function selectHistory(pool: Pool, sessionId: string, limit: number): Promise<unknown[]> {
   const r = await pool.query(

@@ -15,6 +15,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { reduce, reduceAll, initialState, localSend, turnActiveIn, type Item, type TranscriptState } from '../web/src/model.ts';
 import { resultLine } from '../web/src/tools.ts';
+import { stripImageBlobs } from '../src/image-blob.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const EVENTS: any[] = fs.readFileSync(path.join(here, 'fixtures/transcript-shapes.jsonl'), 'utf8')
@@ -28,7 +29,10 @@ test('the fixture still covers every shape the reducer branches on', () => {
   const seen = new Set(EVENTS.map((e) => (e.type === 'system' ? `system:${e.subtype}` : e.type === 'control_request' ? `control_request:${e.request?.subtype}` : e.type)));
   for (const want of ['user', 'assistant', 'result', 'stream_event', 'control_request:can_use_tool',
     'system:init', 'system:thinking_tokens', 'system:task_started', 'system:task_notification',
-    'system:background_tasks_changed', 'system:post_turn_summary']) {
+    'system:background_tasks_changed', 'system:post_turn_summary',
+    // shapes a real export proved the reducer was dropping (docs/HISTORY-EXPORT.md)
+    'system:task_progress', 'system:task_updated', 'system:vcs_state_changed',
+    'system:worker_shutting_down', 'conversation_reset', 'control_cancel_request']) {
     assert.ok(seen.has(want), `fixture lost coverage of ${want}`);
   }
 });
@@ -65,7 +69,9 @@ test('every tool call is threaded to its result', () => {
   assert.ok(calls.length >= 3, 'fixture should contain several tool calls');
   const settled = calls.filter((c) => c.status === 'ok' || c.status === 'error');
   assert.ok(settled.length >= 2, 'tool_results did not reach their cards');
-  for (const c of settled) assert.equal(typeof c.result, 'string');
+  // A result that arrived is a string. A call the turn ended without one is settled anyway (so
+  // the card cannot spin forever) and legitimately carries none — endTurn does not invent output.
+  for (const c of settled) if (c.result !== undefined) assert.equal(typeof c.result, 'string');
   // One of the fixture's results is an error; it must be marked, not silently rendered as ok.
   assert.ok(calls.some((c) => c.status === 'error'), 'the is_error tool_result lost its error state');
 });
@@ -128,12 +134,19 @@ test('history backfill never flips busy or opens a permission sheet', () => {
 test('an unfinished turn is still recognisable in the backfill', () => {
   // The reducer keeps busy=false for history, so the view asks separately (ChatView re-derives
   // `busy` after each backfill) — otherwise reopening a running session shows no Stop button.
-  // The fixture's last turn never got its `result`, which is exactly that case.
-  assert.equal(EVENTS[EVENTS.length - 1].type, 'assistant');
-  assert.equal(turnActiveIn(EVENTS), true, 'a turn with no result is still in flight');
-  assert.equal(turnActiveIn([...EVENTS, { type: 'result', subtype: 'success' }]), false);
+  // The fixture's tail deliberately shuts the session down, so the "no result yet" case is the
+  // slice ending at its last assistant message.
+  const midTurn = EVENTS.slice(0, EVENTS.map((e) => e.type).lastIndexOf('assistant') + 1);
+  assert.equal(midTurn[midTurn.length - 1].type, 'assistant');
+  assert.equal(turnActiveIn(midTurn), true, 'a turn with no result is still in flight');
+  assert.equal(turnActiveIn([...midTurn, { type: 'result', subtype: 'success' }]), false);
+  // The child going away, or the conversation being reset, ends the turn just as firmly: nobody
+  // is left to produce the result, so the Stop button must not come back on reopen.
+  assert.equal(turnActiveIn([...midTurn, { type: 'system', subtype: 'worker_shutting_down', reason: 'host_exit' }]), false);
+  assert.equal(turnActiveIn([...midTurn, { type: 'conversation_reset' }]), false);
+  assert.equal(turnActiveIn(EVENTS), false, 'the fixture ends with the worker shutting down');
   // Events that are not part of a turn must neither end one nor resurrect one.
-  const finished = [...EVENTS, { type: 'result', subtype: 'success' }, { type: 'system', subtype: 'thinking_tokens', estimated_tokens: 12 }];
+  const finished = [...midTurn, { type: 'result', subtype: 'success' }, { type: 'system', subtype: 'thinking_tokens', estimated_tokens: 12 }];
   assert.equal(turnActiveIn(finished), false);
   assert.equal(turnActiveIn([{ type: 'system', subtype: 'init' }, { type: 'keep_alive' }]), false);
   assert.equal(turnActiveIn([]), false);
@@ -288,3 +301,140 @@ test('unknown event types and subtypes are inert', () => {
   }
   assert.deepEqual(kinds(s), kinds(before));
 });
+
+// ── shapes a real 6298-event export proved were being dropped (docs/HISTORY-EXPORT.md) ──
+
+test('an image tool_result becomes an attachment, never JSON in the card', () => {
+  const call = only(history(), 'tools').flatMap((t) => t.calls).find((c) => c.images?.length);
+  assert.ok(call, "the fixture's Read of a screenshot lost its image");
+  assert.equal(call!.images!.length, 1);
+  assert.equal(call!.images![0].mediaType, 'image/png');
+  assert.ok((call!.images![0].bytes ?? 0) > 0, 'the placeholder needs a size before the bytes load');
+  // The whole point: 600 KB of base64 used to be stringified into this string.
+  assert.equal(call!.result, '', 'an image-only result carries no text');
+  assert.equal(resultLine(call!)!.text, '图片');
+});
+
+test('a stripped image survives as a reference the card can fetch', () => {
+  // What the phone actually receives: the server replaced the base64 on the way out.
+  const s = reduceAll(EVENTS.map(stripImageBlobs), { isHistory: true });
+  const img = only(s, 'tools').flatMap((t) => t.calls).find((c) => c.images?.length)!.images![0];
+  assert.ok(img.ref, 'without a ref the image can never be loaded');
+  assert.equal(img.dataUrl, undefined, 'stripped means the bytes are NOT in the transcript');
+  assert.ok((img.bytes ?? 0) > 0, 'the size survives the strip so the card can show it');
+});
+
+test('a withdrawn permission request closes the sheet', () => {
+  const open = reduce(initialState(), {
+    type: 'control_request', request_id: 'r1',
+    request: { subtype: 'can_use_tool', tool_name: 'Bash', tool_use_id: 'tu1', input: { command: 'git push' }, description: '命令包含 push' },
+  });
+  assert.equal(open.live.permission?.requestId, 'r1');
+  // The observed field is `description`; reading only `decision_reason` left this empty.
+  assert.equal(open.live.permission?.reason, '命令包含 push');
+
+  const other = reduce(open, { type: 'control_cancel_request', request_id: 'someone_else' });
+  assert.equal(other.live.permission?.requestId, 'r1', 'an unrelated cancel must not close the sheet');
+
+  const cancelled = reduce(open, { type: 'control_cancel_request', request_id: 'r1' });
+  assert.equal(cancelled.live.permission, undefined, 'a withdrawn request cannot stay answerable');
+});
+
+test('a withdrawn question card settles instead of waiting forever', () => {
+  const asked = reduce(initialState(), {
+    type: 'control_request', request_id: 'q1',
+    request: { subtype: 'can_use_tool', tool_name: 'AskUserQuestion', tool_use_id: 'tq1', input: { questions: [{ question: '继续吗', options: [{ label: '好' }, { label: '不' }] }] } },
+  });
+  assert.equal(only(asked, 'question').length, 1);
+  const cancelled = reduce(asked, { type: 'control_cancel_request', request_id: 'q1' });
+  assert.equal(only(cancelled, 'question')[0].answered, '已在终端处理');
+});
+
+test('task progress fills the card in; a matching task_updated finishes it', () => {
+  const s = history();
+  const task = only(s, 'bgtask').find((t) => t.taskId === 'bzendrcgd');
+  assert.ok(task, 'the fixture task lost its card');
+  assert.equal(task!.detail, 'Review: review:injector', 'the current step is the only news a long task gives');
+  assert.deepEqual(task!.phases, ['Review', 'Verify']);
+  assert.equal(task!.tools, 3);
+  assert.equal(task!.ms, 2553);
+  assert.equal(task!.status, 'completed', 'a matching task_updated must settle the card');
+
+  // Progress for a task we never saw start must not invent a card out of nothing.
+  const before = only(s, 'bgtask').length;
+  const stray = reduce(s, { type: 'system', subtype: 'task_progress', task_id: 'never_started', description: 'x' });
+  assert.equal(only(stray, 'bgtask').length, before);
+
+  // …and a late frame must not revive a card that already finished.
+  const late = reduce(s, { type: 'system', subtype: 'task_progress', task_id: 'bzendrcgd', description: '又开始了' });
+  assert.equal(only(late, 'bgtask').find((t) => t.taskId === 'bzendrcgd')!.detail, 'Review: review:injector');
+
+  // A task the worker never got to finish is neither completed nor failed. The fixture starts one
+  // after the background-task list is emptied, so worker_shutting_down is what settles it.
+  const orphan = only(s, 'bgtask').find((t) => t.taskId === 'wf7run');
+  assert.ok(orphan, 'the fixture lost its still-running task');
+  assert.equal(orphan!.status, 'interrupted', 'the worker went away mid-task');
+  assert.equal(orphan!.detail, 'Verify: verify:gate-rebind', 'the step it stopped on is the useful part');
+  assert.ok(!only(s, 'bgtask').some((t) => t.status === 'running'), 'nothing may still claim to run');
+});
+
+test('a conversation reset breaks the transcript and drops the task list', () => {
+  assert.ok(only(history(), 'divider').some((d) => d.label === '对话已重置'));
+
+  let s = reduce(initialState(), {
+    type: 'assistant',
+    message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tc1', name: 'TaskCreate', input: { subject: '写测试' } }] },
+  });
+  assert.equal(s.todos.length, 1);
+  s = reduce(s, { type: 'conversation_reset', new_conversation_id: 'c2' });
+  assert.equal(s.todos.length, 0, '/clear must not carry tasks into the next conversation');
+  assert.equal(s.live.busy, false);
+  assert.equal(only(s, 'todo').length, 1, 'the old todo card stays as history, it just stops growing');
+});
+
+test('the worker shutting down ends the turn and says so', () => {
+  assert.ok(only(history(), 'divider').some((d) => d.label.includes('会话已断开')));
+
+  let s = reduce(initialState(), { type: 'user', message: { role: 'user', content: '跑一下测试' } });
+  assert.equal(s.live.busy, true);
+  s = reduce(s, { type: 'system', subtype: 'worker_shutting_down', reason: 'host_exit' });
+  assert.equal(s.live.busy, false, 'nothing is left to finish this turn');
+  assert.equal(s.live.running, undefined);
+  assert.ok(only(s, 'divider')[0].label.includes('终端已退出'));
+});
+
+test('a commit or a push is worth one status line', () => {
+  assert.ok(only(history(), 'status').some((x) => x.text === '已提交 · main'));
+  const pushed = reduce(initialState(), { type: 'system', subtype: 'vcs_state_changed', kind: 'push', branch: 'main' });
+  assert.equal(only(pushed, 'status')[0].text, '已推送 · main');
+  const nameless = reduce(initialState(), { type: 'system', subtype: 'vcs_state_changed' });
+  assert.equal(only(nameless, 'status').length, 0, 'a kindless event says nothing worth a line');
+});
+
+test('a payload carries the image twice, and both copies are stripped', () => {
+  // `tool_use_result` is Claude's own record of the call and holds a second full copy of the
+  // base64. Nothing here reads it, and leaving it in shipped every screenshot anyway.
+  const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==';
+  const payload = {
+    type: 'user', uuid: 'u-twice',
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: [
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG } },
+    ] }] },
+    tool_use_result: { type: 'image', file: { type: 'image/png', base64: PNG } },
+  };
+  const out = stripImageBlobs(payload);
+  const wire = JSON.stringify(out);
+  assert.ok(!wire.includes(PNG), 'both copies of the image must leave the wire');
+  assert.ok(wire.includes('u-twice:0'), 'the content block keeps the reference the card fetches');
+  // The surrounding structure survives, so nothing downstream trips over a missing field.
+  assert.equal(out.tool_use_result.type, 'image');
+  assert.equal(out.tool_use_result.file.type, 'image/png');
+  assert.equal(JSON.stringify(payload).includes(PNG), true, 'the input is never mutated');
+
+  // Payloads without the extra copy, or with a shape we did not expect, pass through untouched.
+  assert.doesNotThrow(() => stripImageBlobs({ type: 'user', uuid: 'u2', tool_use_result: 'a string' }));
+  assert.doesNotThrow(() => stripImageBlobs({ type: 'user', uuid: 'u3', tool_use_result: { file: null } }));
+  const plain = { type: 'user', uuid: 'u4', message: { role: 'user', content: 'hi' } };
+  assert.equal(stripImageBlobs(plain), plain, 'nothing to strip means the same object back');
+});
+
