@@ -13,7 +13,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/server/store.ts';
-import { createPool, ensureSchema, selectHistory, type Pool } from '../src/server/db.ts';
+import { createPool, ensureSchema, selectHistory, selectShapeStats, backfillShapes, type Pool } from '../src/server/db.ts';
+import { verdictOf } from '../src/wire-shape.ts';
 import { createControllerServer } from '../src/server/index.ts';
 import { resolveImageBlob } from '../src/image-blob.ts';
 
@@ -97,6 +98,38 @@ test('transcript persists and replays oldest-first', { skip }, async () => {
   assert.deepEqual(h.map((e) => e.type), ['user', 'assistant', 'result'], 'chronological');
   assert.equal(h[0].message.content, 'one', 'jsonb round-trips the payload');
   await b.close();
+});
+
+test('every stored event carries its wire shape, and old rows can be backfilled', { skip }, async () => {
+  const pool = await db();
+  const a = new Store({ pool });
+  const s = await a.createReplSession(CRED, { dir: '/x' });
+  await a.appendEvents(s.id, [
+    { type: 'system', subtype: 'init', cwd: '/x' },
+    { type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } },
+    { type: 'system', subtype: 'a_subtype_from_the_future' },
+  ]);
+  await a.close();
+
+  const shapes = await selectShapeStats(pool);
+  const seen = new Map(shapes.map((x) => [x.shape, x]));
+  assert.deepEqual([...seen.keys()].sort(), ['assistant:[text]', 'system:a_subtype_from_the_future', 'system:init']);
+  // The point of the column: the backlog is a query, and it needs no verdict stored alongside.
+  assert.equal(verdictOf('system:init'), 'handled');
+  assert.equal(verdictOf('system:a_subtype_from_the_future'), 'unknown');
+  // A pointer back to one real payload, so inspecting an unadapted shape costs one row.
+  assert.ok(seen.get('system:a_subtype_from_the_future')!.firstId > 0, 'stat carries a sample id');
+
+  // Rows stored before the column existed: NULL until backfilled, then identical to a fresh write.
+  await pool.query(`update ${TEST_SCHEMA}.events set shape = null`);
+  assert.equal((await selectShapeStats(pool)).length, 1, 'all rows collapse into one <not backfilled> bucket');
+  assert.equal(await backfillShapes(pool, 1000), 3, 'three rows stamped');
+  assert.equal(await backfillShapes(pool, 1000), 0, 'idempotent — nothing left to do');
+  assert.deepEqual(
+    (await selectShapeStats(pool)).map((x) => x.shape).sort(),
+    ['assistant:[text]', 'system:a_subtype_from_the_future', 'system:init'],
+    'backfill reproduces exactly what insertEvents writes',
+  );
 });
 
 test('an image blob stays resolvable by its payload uuid', { skip }, async () => {

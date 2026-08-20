@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
+import { shapeOf } from '../wire-shape.ts';
 
 export type Pool = pg.Pool;
 
@@ -190,14 +191,67 @@ export async function flushActivity(pool: Pool, rows: Array<{ id: string; lastAc
   );
 }
 
-/** One multi-row INSERT for everything that arrived in a single /worker/events POST. */
+/**
+ * One multi-row INSERT for everything that arrived in a single /worker/events POST.
+ *
+ * `shape` rides along in the same statement (no extra round trip): it is what makes the
+ * unadapted-shape backlog a SQL query instead of a history export. Computed in Node with the real
+ * shapeOf() rather than as a SQL expression on purpose — a second implementation of the
+ * discriminator tree would be a second thing to keep in sync.
+ */
 export async function insertEvents(pool: Pool, sessionId: string, events: Array<{ type?: string; payload: unknown }>): Promise<void> {
   if (!events.length) return;
   await pool.query(
-    `insert into events (session_id, type, payload)
-     select $1, t.type, t.payload::jsonb from unnest($2::text[], $3::text[]) as t(type, payload)`,
-    [sessionId, events.map((e) => e.type ?? null), events.map((e) => JSON.stringify(e.payload))],
+    `insert into events (session_id, type, payload, shape)
+     select $1, t.type, t.payload::jsonb, t.shape
+       from unnest($2::text[], $3::text[], $4::text[]) as t(type, payload, shape)`,
+    [sessionId, events.map((e) => e.type ?? null), events.map((e) => JSON.stringify(e.payload)),
+     events.map((e) => shapeOf(e.payload))],
   );
+}
+
+/** One row per payload shape this deployment has ever stored. Verdicts are applied by the caller. */
+export interface ShapeStat { shape: string; count: number; firstId: number; firstSeen: string; lastSeen: string }
+
+/**
+ * The shape census, newest-activity first. `firstId` is a pointer back to one real payload, so
+ * inspecting an unadapted shape costs one row instead of a dump of the whole history.
+ */
+export async function selectShapeStats(pool: Pool): Promise<ShapeStat[]> {
+  const r = await pool.query(
+    `select coalesce(shape, '<not backfilled>') as shape, count(*)::bigint as n,
+            min(id)::bigint as first_id, min(created_at) as first_seen, max(created_at) as last_seen
+       from events group by 1 order by n desc`,
+  );
+  // pg hands back a Date for timestamptz; ISO is what the callers format from.
+  const iso = (v: unknown): string => (v instanceof Date ? v.toISOString() : String(v ?? ''));
+  return r.rows.map((row: any) => ({
+    shape: row.shape,
+    count: Number(row.n),
+    firstId: Number(row.first_id),
+    firstSeen: iso(row.first_seen),
+    lastSeen: iso(row.last_seen),
+  }));
+}
+
+/**
+ * One batch of the shape backfill: the oldest `limit` rows with no shape yet, stamped with the
+ * shape their stored payload implies. Returns how many were updated, so the caller can loop until
+ * it returns 0. Idempotent — `shape is null` is the work queue, so an interrupted run just resumes.
+ */
+export async function backfillShapes(pool: Pool, limit: number): Promise<number> {
+  const r = await pool.query(
+    `select id, payload from events where shape is null order by id limit $1`,
+    [limit],
+  );
+  if (!r.rows.length) return 0;
+  await pool.query(
+    `update events e set shape = v.shape
+       from (select * from unnest($1::bigint[], $2::text[]) as t(id, shape)) v
+      where e.id = v.id`,
+    [r.rows.map((row: any) => row.id), r.rows.map((row: any) => shapeOf(row.payload))],
+  );
+  return r.rows.length;
 }
 
 /**

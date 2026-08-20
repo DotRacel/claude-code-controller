@@ -55,6 +55,15 @@ create table if not exists events (
   created_at  timestamptz not null default now()
 );
 
+-- The fine-grained sibling of `events.type`, for the same reason that column exists: answering
+-- "which payload shapes has this deployment actually seen, and have we decided what to do with
+-- each?" without reading 40 MB of jsonb (or exporting a whole conversation history to disk just
+-- to count shapes). Written by insertEvents via shapeOf(); backfilled for existing rows by
+-- scripts/backfill-shape.mjs. The verdict is deliberately NOT stored — it is code, it changes
+-- the moment a shape gets adapted, so it is applied at read time (src/wire-shape.ts).
+alter table events add column if not exists shape text;
+create index if not exists events_shape_idx on events (shape);
+
 create unique index if not exists users_token_idx on users (token);
 create index if not exists sessions_credential_idx on sessions (credential, last_activity desc);
 create unique index if not exists sessions_ingress_token_idx on sessions (ingress_token);
