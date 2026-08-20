@@ -3,14 +3,20 @@
  * payloads it does not consume, so a shape the front-end never learned to render shows up as a
  * number instead of as a bug report from a phone.
  *
- * Detection is dynamic on purpose: rather than a hand-kept list of supported types (which goes
- * stale the moment the CLI emits a new `system` subtype), every payload is reduced and the
- * before/after state compared. `reduce` returns the SAME object for a type it does not know, so
- * reference equality is "ignored outright"; a deep-equal but distinct object is "consumed with
- * no visible effect". Both mean nothing reached the screen.
+ * Two independent signals, cross-checked against each other:
+ *
+ *  - **declared** — `verdictOf` (src/wire-shape.ts) says whether we have a decision about this
+ *    shape: handled, ignored on purpose (with a reason), or `unknown` = nobody decided yet.
+ *  - **measured** — the payload is actually reduced and the before/after state compared, by
+ *    reference (the reducer replaces what it touches, so identity is exact).
+ *
+ * Neither alone is enough. Measurement cannot tell a heartbeat we drop on purpose from a subtype
+ * we have never seen, and a declaration can be wrong or go stale. Together they catch drift in
+ * both directions: an `unknown` shape arriving in real traffic is the backlog, and a shape
+ * declared `handled` that never changes anything is a dead branch or a lie.
  *
  * It also flags the opposite failure — a payload that IS consumed but renders as raw JSON,
- * which is what a non-text tool_result (an image) looks like once textOf() stringifies it.
+ * which is what a non-text tool_result (an image) looks like once it is stringified.
  *
  * Export a dump first (see docs/HISTORY-EXPORT.md), then:
  *   node test/history-audit.ts artifacts/history/events.jsonl [--samples]
@@ -18,27 +24,10 @@
  */
 import { readFileSync } from 'node:fs';
 import { initialState, reduce, type TranscriptState } from '../web/src/model.ts';
+import { shapeOf, verdictOf, whyIgnored } from '../src/wire-shape.ts';
 
 const FILE = process.argv[2] ?? 'artifacts/history/events.jsonl';
 const SHOW_SAMPLES = process.argv.includes('--samples');
-
-/** How a payload is bucketed in the report: type plus whatever discriminates it further. */
-function shapeOf(p: any): string {
-  const t = p?.type ?? '?';
-  if (t === 'system') return `system:${p.subtype ?? '?'}`;
-  if (t === 'result') return `result:${p.subtype ?? '?'}`;
-  if (t === 'stream_event') return `stream_event:${p.event?.type ?? '?'}`;
-  if (t === 'control_request') return `control_request:${p.request?.subtype ?? '?'}`;
-  if (t === 'control_response') return `control_response:${p.response?.subtype ?? '?'}`;
-  if (t === 'assistant' || t === 'user') {
-    const c = p.message?.content;
-    if (typeof c === 'string') return `${t}:<string>`;
-    if (!Array.isArray(c)) return `${t}:<${c == null ? 'missing' : typeof c}>`;
-    const kinds = [...new Set(c.map((b: any) => b?.type ?? '?'))].sort();
-    return `${t}:[${kinds.join('+') || 'empty'}]`;
-  }
-  return String(t);
-}
 
 /** Content blocks whose own shape matters (a tool_result carrying an image, say). */
 function subShapes(p: any): string[] {
@@ -165,16 +154,36 @@ const pad = (n: number | string, w: number) => String(n).padStart(w);
 console.log(`${FILE}: ${lines} payloads${bad ? `, ${bad} unparseable` : ''}\n`);
 
 const rows = [...buckets.entries()].sort((a, b) => b[1].total - a[1].total);
-console.log('  total  ignored    inert  shape');
+/** Every payload of this shape left the state untouched — measured, not declared. */
+const inertAll = (b: Bucket) => b.ignored + b.inert === b.total;
+
+console.log('  total  no-effect  declared   shape');
 for (const [shape, b] of rows) {
-  const flag = b.ignored === b.total ? ' ← never rendered' : b.ignored + b.inert === b.total ? ' ← no visible effect' : '';
-  console.log(`${pad(b.total, 7)}${pad(b.ignored, 9)}${pad(b.inert, 9)}  ${shape}${flag}`);
+  const v = verdictOf(shape);
+  const mark = v === 'unknown' ? '←' : ' ';
+  console.log(`${pad(b.total, 7)}${pad(b.ignored + b.inert, 11)}  ${v.padEnd(8)} ${mark} ${shape}`);
 }
 
-const dropped = rows.filter(([, b]) => b.ignored + b.inert === b.total);
-if (dropped.length) {
-  console.log(`\n${dropped.length} shape(s) produce nothing on screen:`);
-  for (const [shape, b] of dropped) console.log(`  ${shape}  ×${b.total}`);
+// ── the backlog: shapes real traffic contains and nobody has decided about ──
+const backlog = rows.filter(([shape]) => verdictOf(shape) === 'unknown');
+if (backlog.length) {
+  console.log(`\n⚠ ${backlog.length} shape(s) to adapt — present in this history, no decision in src/wire-shape.ts:`);
+  for (const [shape, b] of backlog) console.log(`  ${pad(b.total, 6)}  ${shape}`);
+  console.log('  (adapt them in web/src/model.ts, or declare them ignored with a reason)');
+} else {
+  console.log('\n✅ every shape in this history has a decision');
+}
+
+// ── drift the other way: a declaration the measurement contradicts ──
+const lying = rows.filter(([shape, b]) => verdictOf(shape) === 'handled' && inertAll(b));
+if (lying.length) {
+  console.log(`\n⚠ declared handled but never changed anything (dead branch, or the rule is wrong):`);
+  for (const [shape, b] of lying) console.log(`  ${pad(b.total, 6)}  ${shape}`);
+}
+const noisy = rows.filter(([shape, b]) => verdictOf(shape) === 'ignored' && !inertAll(b));
+if (noisy.length) {
+  console.log(`\n⚠ declared ignored but DID change the transcript:`);
+  for (const [shape, b] of noisy) console.log(`  ${pad(b.total, 6)}  ${shape} — "${whyIgnored(shape) ?? ''}"`);
 }
 
 if (subCounts.size) {

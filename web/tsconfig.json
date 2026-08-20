@@ -14,5 +14,6 @@
     "allowImportingTsExtensions": true,
     "noEmit": true
   },
-  "include": ["src", "../src/tool-summary.ts", "../src/transcript-text.ts", "../src/push-event.ts"]
+  "include": ["src", "../src/tool-summary.ts", "../src/transcript-text.ts", "../src/push-event.ts",
+              "../src/image-blob.ts", "../src/wire-shape.ts"]
 }
