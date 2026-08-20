@@ -19,15 +19,20 @@
  * which is what a non-text tool_result (an image) looks like once it is stringified.
  *
  * Export a dump first (see docs/HISTORY-EXPORT.md), then:
- *   node test/history-audit.ts artifacts/history/events.jsonl [--samples]
+ *   node test/history-audit.ts artifacts/history/events.jsonl [--samples] [--promote]
  * Lines are either a bare payload or the {sid,eid,p} envelope the export query produces.
+ *
+ * `--promote` appends one redacted payload per undecided shape to the fixture corpus, which makes
+ * `npm test` fail until it is handled — discovery, then a permanent regression, in one step.
  */
-import { readFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
 import { initialState, reduce, type TranscriptState } from '../web/src/model.ts';
 import { shapeOf, verdictOf, whyIgnored } from '../src/wire-shape.ts';
 
 const FILE = process.argv[2] ?? 'artifacts/history/events.jsonl';
 const SHOW_SAMPLES = process.argv.includes('--samples');
+const WANT_PROMOTE = process.argv.includes('--promote');
+const FIXTURE = new URL('fixtures/transcript-shapes.jsonl', import.meta.url);
 
 /** Content blocks whose own shape matters (a tool_result carrying an image, say). */
 function subShapes(p: any): string[] {
@@ -67,13 +72,40 @@ function sameLive(a: any, b: any): boolean {
 const unchanged = (a: TranscriptState, b: TranscriptState): boolean =>
   sameItems(a.items, b.items) && sameItems(a.todos, b.todos) && sameLive(a.live, b.live);
 
-interface Bucket { total: number; ignored: number; inert: number; sample?: any }
+interface Bucket {
+  total: number; ignored: number; inert: number;
+  /** Strings truncated hard — for reading in `--samples`. */
+  sample?: any;
+  /** Kept only for undecided shapes, and only under --promote: the payload a fixture line needs. */
+  promotable?: any;
+}
 const buckets = new Map<string, Bucket>();
 const subCounts = new Map<string, number>();
 /** Items whose text is raw JSON rather than prose — a shape that reached the screen unrendered. */
 const rawJson = new Map<string, { count: number; sample: string }>();
 /** The worst version of that: a base64 blob, which is megabytes of noise in a chat bubble. */
 const blobs = { count: 0, chars: 0, tools: new Map<string, number>() };
+
+/**
+ * A payload trimmed down to its SHAPE, for appending to the fixture corpus.
+ *
+ * The corpus lives in git, and a real payload is real conversation history — this audit's own
+ * report has found an access token echoed by a Bash call. So promotion keeps the structure and
+ * throws the content away: image bytes go (stripImageBlobs), and every string is capped, which is
+ * also what stops a 600 KB tool result from landing in a test fixture. Nothing about matching a
+ * shape needs the text, and a human still reviews the diff before it is committed.
+ */
+const PROMOTE_STR_MAX = 120;
+function redact(o: any): any {
+  if (typeof o === 'string') return o.length > PROMOTE_STR_MAX ? `${o.slice(0, PROMOTE_STR_MAX)}…` : o;
+  if (Array.isArray(o)) return o.map(redact);
+  if (o && typeof o === 'object') {
+    const r: Record<string, unknown> = {};
+    for (const k of Object.keys(o)) r[k] = redact(o[k]);
+    return r;
+  }
+  return o;
+}
 
 const RAW_JSON_HEAD = /^\s*[[{]/;
 /** A stringified image content block — `textOf` produced this from a non-text tool_result. */
@@ -110,6 +142,7 @@ for (const line of readFileSync(FILE, 'utf8').split('\n')) {
   const b = buckets.get(shape) ?? { total: 0, ignored: 0, inert: 0 };
   b.total++;
   if (!b.sample) b.sample = trunc(payload);
+  if (WANT_PROMOTE && !b.promotable && verdictOf(shape) === 'unknown') b.promotable = redact(payload);
 
   const before = state;
   // History mode: this is a backfill, which is what a phone reopening a session gets.
@@ -170,8 +203,34 @@ if (backlog.length) {
   console.log(`\n⚠ ${backlog.length} shape(s) to adapt — present in this history, no decision in src/wire-shape.ts:`);
   for (const [shape, b] of backlog) console.log(`  ${pad(b.total, 6)}  ${shape}`);
   console.log('  (adapt them in web/src/model.ts, or declare them ignored with a reason)');
+  if (!WANT_PROMOTE) console.log('  --promote appends one payload of each to test/fixtures/transcript-shapes.jsonl');
 } else {
   console.log('\n✅ every shape in this history has a decision');
+}
+
+/*
+ * Promotion: the corpus is this project's memory of what production has taught it, and the only
+ * defence against un-learning a shape during a refactor. So a shape gets one line in the fixture
+ * the moment it is discovered — before anyone adapts it — and test/model.test.ts then holds the
+ * reducer to it forever ('nothing in the fixture is an undecided shape any more' fails until it
+ * is handled, and keeps failing if the handling is ever lost).
+ */
+if (WANT_PROMOTE) {
+  const have = new Set(
+    readFileSync(FIXTURE, 'utf8').split('\n').filter((l) => l.trim())
+      .map((l) => { try { return shapeOf(JSON.parse(l)); } catch { return ''; } }),
+  );
+  const add = backlog.filter(([shape, b]) => b.promotable && !have.has(shape));
+  if (!add.length) {
+    console.log('\nnothing to promote — the fixture already covers every undecided shape here');
+  } else {
+    appendFileSync(FIXTURE, add.map(([, b]) => JSON.stringify(b.promotable)).join('\n') + '\n');
+    console.log(`\npromoted ${add.length} shape(s) into test/fixtures/transcript-shapes.jsonl:`);
+    for (const [shape] of add) console.log(`  + ${shape}`);
+    console.log('\n  Strings are capped and image bytes stripped, but READ THE DIFF before committing:');
+    console.log('  these lines came out of a real conversation.');
+    console.log('  `npm test` now fails until each one is handled or declared ignored — that is the point.');
+  }
 }
 
 // ── drift the other way: a declaration the measurement contradicts ──

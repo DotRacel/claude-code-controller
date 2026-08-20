@@ -314,7 +314,12 @@ test('result lines summarise instead of dumping output', () => {
  * noise must stay genuinely free.
  */
 test('declared noise is inert, and returns the same state object', () => {
-  const before = history();
+  // Built here rather than from the corpus: promoting a newly discovered shape into the fixture
+  // must turn exactly ONE test red (the corpus one), not every test that happens to read it.
+  const before = reduceAll([
+    { type: 'user', message: { role: 'user', content: 'hi' } },
+    { type: 'assistant', message: { content: [{ type: 'text', text: 'hello' }] } },
+  ]);
   let s = before;
   for (const p of [{ type: 'keep_alive' }, { type: 'control_response', response: { subtype: 'success' } }, null, 'nope']) {
     s = reduce(s, p, { isHistory: true });
@@ -324,7 +329,10 @@ test('declared noise is inert, and returns the same state object', () => {
 });
 
 test('an undecided shape is marked and counted, and disturbs nothing', () => {
-  const before = history();
+  const before = reduceAll([
+    { type: 'user', message: { role: 'user', content: 'hi' } },
+    { type: 'assistant', message: { content: [{ type: 'text', text: 'hello' }] } },
+  ]);
   let s = reduce(before, { type: 'system', subtype: 'a_brand_new_subtype', anything: 1 }, { isHistory: true });
   s = reduce(s, { type: 'who_knows' }, { isHistory: true });
 
