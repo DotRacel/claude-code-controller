@@ -1,0 +1,95 @@
+name: Injection Compat
+
+# Does each supported `claude` still match our injection surface? A routine claude release can
+# reshape one of the minified guards the injector patches (see src/injector/anchors.ts). The
+# injection layer is version-PROFILED (src/injector/profiles.ts): each version range maps to a
+# gate set, and the injector detects the claude version at launch to pick one. This job proves,
+# per version, that the profile selected for it locates every gate.
+#
+# It needs NO Anthropic credential: the idle `-p` host never enters the remote-control/login
+# path, and we only read the bundle over the inspector, never make a request. So it is safe to
+# run unattended on a schedule with nothing but a dummy key.
+
+on:
+  # Track new claude releases (the `latest` leg) — a red run is the early warning that a release
+  # drifted a gate and needs a new profile. GitHub emails the repo owner on a failed scheduled run.
+  schedule:
+    - cron: '17 6 * * *' # daily 06:17 UTC (off the hour on purpose)
+  # Manual run. Leave the input blank to sweep the full version matrix; set it to one version
+  # (e.g. 2.1.235) to bisect exactly where a drift was introduced.
+  workflow_dispatch:
+    inputs:
+      claude_version:
+        description: 'Single claude version to test (blank = full matrix). e.g. 2.1.238'
+        default: ''
+        required: false
+  # Also verify when the injection surface itself changes — an anchors.ts / profiles.ts edit that
+  # no longer matches a build should fail here, not in a user's terminal.
+  push:
+    branches: [main]
+    paths:
+      - 'src/injector/**'
+      - 'test/verify-injection.ts'
+      - '.github/workflows/injection-compat.yml'
+  pull_request:
+    paths:
+      - 'src/injector/**'
+      - 'test/verify-injection.ts'
+      - '.github/workflows/injection-compat.yml'
+
+concurrency:
+  group: injcompat-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Compute the version list: the manual single-version input if given, else the full matrix.
+  # The matrix spans both profiles' ranges: legacy floor (2.1.229), a mid point (2.1.232), the
+  # spawner-fix point (2.1.234), the legacy ceiling (2.1.237), the preflight floor (2.1.238), and
+  # whatever `latest` is today. All are real published tags (2.1.230 was never published).
+  matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      versions: ${{ steps.set.outputs.versions }}
+    steps:
+      - id: set
+        run: |
+          if [ -n "${{ github.event.inputs.claude_version }}" ]; then
+            echo 'versions=["${{ github.event.inputs.claude_version }}"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'versions=["2.1.229","2.1.232","2.1.234","2.1.237","2.1.238","latest"]' >> "$GITHUB_OUTPUT"
+          fi
+
+  verify:
+    needs: matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false # one drifted version must not hide the status of the others
+      matrix:
+        claude_version: ${{ fromJSON(needs.matrix.outputs.versions) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.x'
+          cache: npm
+
+      - run: npm ci
+
+      # The real thing: the Bun-compiled binary the injector attaches to.
+      - name: Install claude (${{ matrix.claude_version }})
+        run: npm i -g @anthropic-ai/claude-code@${{ matrix.claude_version }}
+
+      - name: Record claude version
+        run: claude --version
+
+      # verify-injection detects the version, picks the matching profile, and asserts every gate
+      # in that profile locates against the installed bundle. Exit 1 = this version drifted a gate
+      # its profile no longer matches → add a variant in anchors.ts + a profile in profiles.ts.
+      - name: Verify injection gates locate on this build
+        env:
+          CLAUDE_BIN: claude
+          # Keeps the idle `-p` host from prompting for a login before it opens the inspector.
+          # No request is ever made with it — we attach, read the bundle, and kill the process.
+          ANTHROPIC_API_KEY: sk-ant-ci-verify-injection-not-a-real-key
+          CCC_VERBOSE: '1'
+        run: node test/verify-injection.ts

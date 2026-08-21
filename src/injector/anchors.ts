@@ -53,102 +53,158 @@ export interface GateSpec {
 }
 
 // dispatch() remote-control branch (anchor: telemetry marker "cli_bridge_path"), and
-// bridgeMain() (anchor: the http-scheme check string). Guard shapes captured from 2.1.231.
-export const GATES: GateSpec[] = [
-  // ── dispatch: hasStoredOAuthToken + getBridgeDisabledReason + checkBridgeMinVersion.
-  // h/g are destructured BEFORE H, so at the `if(!H())` pause they're already visible.
-  {
-    id: 'dispatch.oauth',
-    windowAnchor: 'cli_bridge_path',
-    windowBack: 0,
-    windowFwd: 3200,
-    aliases: {
-      H: 'hasStoredOAuthToken:([\\w$]+)\\}',
-      h: 'getBridgeDisabledReason:([\\w$]+)[,}]',
-      g: 'checkBridgeMinVersion:([\\w$]+)[,}]',
-    },
-    bpSubstr: 'if(!${H}())',
-    rebinds: ['${H}=function(){return !0}', '${h}=async function(){return null}', '${g}=function(){return null}'],
+// bridgeMain() (anchor: the http-scheme check string). Guard shapes originally captured from
+// 2.1.231.
+//
+// ── Version-profiled surface ──────────────────────────────────────────────────────────────
+// Each gate below is a NAMED constant so a version PROFILE (see profiles.ts) can pick the right
+// variant when a claude release reshapes one guard's *code shape* (the runtime string/structural
+// anchors already absorb pure name churn). Most gates are shared across every version; only the
+// ones that actually drifted carry variants. `headlessGates(trustVariant)` assembles the 7-gate
+// headless array in its original order — order does not affect correctness (each gate locates
+// independently) but keeps logs and reports stable.
+//
+// Known drift so far (measured):
+//   - `dispatch.trust`: ≤2.1.237 used two functions (enrollTrustedDeviceIfNeeded +
+//     getTrustedDeviceUnenrolledReason); 2.1.238 merged them into a single
+//     preflightTrustedDeviceBlocking(). Hence LEGACY vs PREFLIGHT below.
+
+// ── dispatch: hasStoredOAuthToken + getBridgeDisabledReason + checkBridgeMinVersion.
+// h/g are destructured BEFORE H, so at the `if(!H())` pause they're already visible.
+export const GATE_DISPATCH_OAUTH: GateSpec = {
+  id: 'dispatch.oauth',
+  windowAnchor: 'cli_bridge_path',
+  windowBack: 0,
+  windowFwd: 3200,
+  aliases: {
+    H: 'hasStoredOAuthToken:([\\w$]+)\\}',
+    h: 'getBridgeDisabledReason:([\\w$]+)[,}]',
+    g: 'checkBridgeMinVersion:([\\w$]+)[,}]',
   },
-  // ── dispatch: isPolicyAllowed("allow_remote_control")
-  {
-    id: 'dispatch.policy',
-    windowAnchor: 'cli_bridge_path',
-    windowBack: 0,
-    windowFwd: 3600,
-    aliases: { R: 'isPolicyAllowed:([\\w$]+)\\}' },
-    bpSubstr: '!${R}("allow_remote_control")',
-    rebinds: ['${R}=function(){return !0}'],
+  bpSubstr: 'if(!${H}())',
+  rebinds: ['${H}=function(){return !0}', '${h}=async function(){return null}', '${g}=function(){return null}'],
+};
+
+// ── dispatch: isPolicyAllowed("allow_remote_control")
+export const GATE_DISPATCH_POLICY: GateSpec = {
+  id: 'dispatch.policy',
+  windowAnchor: 'cli_bridge_path',
+  windowBack: 0,
+  windowFwd: 3600,
+  aliases: { R: 'isPolicyAllowed:([\\w$]+)\\}' },
+  bpSubstr: '!${R}("allow_remote_control")',
+  rebinds: ['${R}=function(){return !0}'],
+};
+
+// ── dispatch: trusted-device gate — LEGACY variant (≤2.1.237).
+// Two functions: `await W(); F=await G(); if(F)`. Break at `await W()` (W/G both bound by then),
+// neutralize both: enrollment → no-op, unenrolled-reason → null.
+export const GATE_DISPATCH_TRUST_LEGACY: GateSpec = {
+  id: 'dispatch.trust',
+  windowAnchor: 'cli_bridge_path',
+  windowBack: 0,
+  windowFwd: 3600,
+  aliases: {
+    W: 'enrollTrustedDeviceIfNeeded:([\\w$]+)\\}',
+    G: 'getTrustedDeviceUnenrolledReason:([\\w$]+)[,}]',
   },
-  // ── dispatch: trusted-device enrollment + unenrolled-reason (await W(); F=await G(); if(F))
-  {
-    id: 'dispatch.trust',
-    windowAnchor: 'cli_bridge_path',
-    windowBack: 0,
-    windowFwd: 3600,
-    aliases: {
-      W: 'enrollTrustedDeviceIfNeeded:([\\w$]+)\\}',
-      G: 'getTrustedDeviceUnenrolledReason:([\\w$]+)[,}]',
-    },
-    bpSubstr: 'await ${W}()',
-    rebinds: ['${W}=async function(){}', '${G}=async function(){return null}'],
-  },
-  // ── bridgeMain: workspace-trust gate `if(…,!<trust>())` before token/baseurl.
-  {
-    id: 'bridgeMain.trust',
-    windowAnchor: 'base URL uses HTTP',
-    windowBack: 4000,
-    windowFwd: 200,
-    aliases: { t: 'checkHasTrustDialogAccepted:([\\w$]+)\\}' },
-    bpSubstr: ',!${t}())',
-    rebinds: ['${t}=function(){return !0}'],
-  },
-  // ── bridgeMain: getBridgeAccessToken guard + getBridgeBaseUrl consume.
-  // M,P destructured together → rebind both at the `if(!M())` pause: M→token, P→our URL.
-  {
-    id: 'bridgeMain.tokenurl',
-    windowAnchor: 'base URL uses HTTP',
-    windowBack: 4000,
-    windowFwd: 200,
-    aliases: { M: 'getBridgeAccessToken:([\\w$]+),', P: 'getBridgeBaseUrl:([\\w$]+)\\}' },
-    bpSubstr: 'if(!${M}())',
-    rebinds: ['${M}=function(){return ${TOKEN}}', '${P}=function(){return ${URL}}'],
-  },
-  // ── bridgeMain: inline scheme check after `let U=P()`.
-  // `if(U.startsWith("http://")&&!U.includes("localhost")&&!U.includes("127.0.0.1")) process.exit(1)`.
-  // U is a primitive string, so `U.startsWith=fn` is discarded. One-shot-patch
-  // String.prototype.startsWith: this check returns false, then the original is restored.
-  {
-    id: 'bridgeMain.httpscheme',
-    windowAnchor: 'Error: Remote Control base URL uses HTTP',
-    windowBack: 200,
-    windowFwd: 40,
-    aliases: { U: 'let ([\\w$]+)=[\\w$]+\\(\\);if\\(\\1\\.startsWith\\("http://"\\)' },
-    bpSubstr: 'if(${U}.startsWith("http://")',
-    rebinds: ['var _s=String.prototype.startsWith;String.prototype.startsWith=function(){String.prototype.startsWith=_s;return!1}'],
-  },
-  // ── spawner: the point where bridgeMain spawns the child claude. Special-cased in
-  // gate-rebind: on hit we set <env>.BUN_INSPECT so the child opens its own inspector,
-  // then attach + rebind the child too (it has its own --sdk-url allowlist gate).
-  {
-    id: 'spawner.spawn',
-    windowAnchor: '--replay-user-messages',
-    windowBack: 0,
-    windowFwd: 1600,
-    // `{...,env:l,windowsHide:!0}` is the spawn options object. Match only up to the env
-    // alias (`env:l,`) — as of 2.1.234 `windowsHide` sits at ~1204 bytes past the anchor,
-    // so anchoring on it was fragile at the window edge (windowFwd used to be 1200 and cut
-    // it off, breaking the whole headless child-rebind chain). `[,}]` after the alias is
-    // enough to disambiguate the spawn env from `e.env` (which has no colon) and from the
-    // long env-object literal above (whose keys are CLAUDE_CODE_*, never `env`).
-    aliases: { L: 'env:([\\w$]+)[,}]' },
-    // Break BEFORE the spawn call (the `.spawn(` site fires AFTER the child is already
-    // spawned). The env object `l` is defined just before this debug log, so pausing here
-    // lets us mutate l.BUN_INSPECT before the spawn reads it.
-    bpSubstr: 'Spawning sessionId',
-    rebinds: [], // handled specially (needs the child inspector port at runtime)
-  },
-];
+  bpSubstr: 'await ${W}()',
+  rebinds: ['${W}=async function(){}', '${G}=async function(){return null}'],
+};
+
+// ── dispatch: trusted-device gate — PREFLIGHT variant (≥2.1.238).
+// Merged into one function: `let{preflightTrustedDeviceBlocking:Z}=…,W=await Z();if(W)…H(Error)`.
+// Break at `=await Z()` (Z already destructured), rebind Z → returns null so `if(W)` never fires.
+export const GATE_DISPATCH_TRUST_PREFLIGHT: GateSpec = {
+  id: 'dispatch.trust',
+  windowAnchor: 'cli_bridge_path',
+  windowBack: 0,
+  windowFwd: 3600,
+  aliases: { Z: 'preflightTrustedDeviceBlocking:([\\w$]+)\\}' },
+  bpSubstr: '=await ${Z}()',
+  rebinds: ['${Z}=async function(){return null}'],
+};
+
+// ── bridgeMain: workspace-trust gate `if(…,!<trust>())` before token/baseurl.
+export const GATE_BRIDGEMAIN_TRUST: GateSpec = {
+  id: 'bridgeMain.trust',
+  windowAnchor: 'base URL uses HTTP',
+  windowBack: 4000,
+  windowFwd: 200,
+  aliases: { t: 'checkHasTrustDialogAccepted:([\\w$]+)\\}' },
+  bpSubstr: ',!${t}())',
+  rebinds: ['${t}=function(){return !0}'],
+};
+
+// ── bridgeMain: getBridgeAccessToken guard + getBridgeBaseUrl consume.
+// M,P destructured together → rebind both at the `if(!M())` pause: M→token, P→our URL.
+export const GATE_BRIDGEMAIN_TOKENURL: GateSpec = {
+  id: 'bridgeMain.tokenurl',
+  windowAnchor: 'base URL uses HTTP',
+  windowBack: 4000,
+  windowFwd: 200,
+  aliases: { M: 'getBridgeAccessToken:([\\w$]+),', P: 'getBridgeBaseUrl:([\\w$]+)\\}' },
+  bpSubstr: 'if(!${M}())',
+  rebinds: ['${M}=function(){return ${TOKEN}}', '${P}=function(){return ${URL}}'],
+};
+
+// ── bridgeMain: inline scheme check after `let U=P()`.
+// `if(U.startsWith("http://")&&!U.includes("localhost")&&!U.includes("127.0.0.1")) process.exit(1)`.
+// U is a primitive string, so `U.startsWith=fn` is discarded. One-shot-patch
+// String.prototype.startsWith: this check returns false, then the original is restored.
+export const GATE_BRIDGEMAIN_HTTPSCHEME: GateSpec = {
+  id: 'bridgeMain.httpscheme',
+  windowAnchor: 'Error: Remote Control base URL uses HTTP',
+  windowBack: 200,
+  windowFwd: 40,
+  aliases: { U: 'let ([\\w$]+)=[\\w$]+\\(\\);if\\(\\1\\.startsWith\\("http://"\\)' },
+  bpSubstr: 'if(${U}.startsWith("http://")',
+  rebinds: ['var _s=String.prototype.startsWith;String.prototype.startsWith=function(){String.prototype.startsWith=_s;return!1}'],
+};
+
+// ── spawner: the point where bridgeMain spawns the child claude. Special-cased in
+// gate-rebind: on hit we set <env>.BUN_INSPECT so the child opens its own inspector,
+// then attach + rebind the child too (it has its own --sdk-url allowlist gate).
+export const GATE_SPAWNER_SPAWN: GateSpec = {
+  id: 'spawner.spawn',
+  windowAnchor: '--replay-user-messages',
+  windowBack: 0,
+  windowFwd: 1600,
+  // `{...,env:l,windowsHide:!0}` is the spawn options object. Match only up to the env
+  // alias (`env:l,`) — as of 2.1.234 `windowsHide` sits at ~1204 bytes past the anchor,
+  // so anchoring on it was fragile at the window edge (windowFwd used to be 1200 and cut
+  // it off, breaking the whole headless child-rebind chain). `[,}]` after the alias is
+  // enough to disambiguate the spawn env from `e.env` (which has no colon) and from the
+  // long env-object literal above (whose keys are CLAUDE_CODE_*, never `env`).
+  aliases: { L: 'env:([\\w$]+)[,}]' },
+  // Break BEFORE the spawn call (the `.spawn(` site fires AFTER the child is already
+  // spawned). The env object `l` is defined just before this debug log, so pausing here
+  // lets us mutate l.BUN_INSPECT before the spawn reads it.
+  bpSubstr: 'Spawning sessionId',
+  rebinds: [], // handled specially (needs the child inspector port at runtime)
+};
+
+/**
+ * Assemble the 7 headless gates in canonical order, given which `dispatch.trust` variant this
+ * profile uses. Profiles (profiles.ts) call this; the exported GATES below is the legacy set.
+ */
+export function headlessGates(trustVariant: GateSpec): GateSpec[] {
+  return [
+    GATE_DISPATCH_OAUTH,
+    GATE_DISPATCH_POLICY,
+    trustVariant,
+    GATE_BRIDGEMAIN_TRUST,
+    GATE_BRIDGEMAIN_TOKENURL,
+    GATE_BRIDGEMAIN_HTTPSCHEME,
+    GATE_SPAWNER_SPAWN,
+  ];
+}
+
+/**
+ * Backwards-compatible default gate set (legacy `dispatch.trust`). Kept so older callers and
+ * `extract-anchors.ts` keep working; the version-aware paths take `profile.gates` instead.
+ */
+export const GATES: GateSpec[] = headlessGates(GATE_DISPATCH_TRUST_LEGACY);
 
 /**
  * Child-process locator: the spawned `claude --print --sdk-url …` has its OWN gate —
@@ -204,10 +260,12 @@ export function fill(template: string, vars: Record<string, string>): string {
  * bundle, resolves each gate to {id, line, col, aliases}, and stashes {main, gates} on
  * globalThis[globalKey]. The Node side polls that global, then sets breakpoints against
  * `main` (the resolved Bun.main URL — NOT assumed, since it moved across versions).
+ *
+ * `gates` is the profile's headless gate set (defaults to the legacy GATES for old callers).
  */
-export function buildLocatorExpr(globalKey: string): string {
+export function buildLocatorExpr(globalKey: string, gates: GateSpec[] = GATES): string {
   const K = JSON.stringify(globalKey);
-  const GATES_JSON = JSON.stringify(GATES);
+  const GATES_JSON = JSON.stringify(gates);
   return `
     globalThis[${K}] = "pending";
     (async () => {
@@ -332,9 +390,9 @@ export const INTERACTIVE_GATES: InteractiveGateSpec[] = [
  * export table, find its `function <alias>(` definition, extract the underlying override alias
  * from the body, and place the breakpoint at the function-body entry (right after `){`).
  */
-export function buildInteractiveLocatorExpr(globalKey: string): string {
+export function buildInteractiveLocatorExpr(globalKey: string, gates: InteractiveGateSpec[] = INTERACTIVE_GATES): string {
   const K = JSON.stringify(globalKey);
-  const GATES_JSON = JSON.stringify(INTERACTIVE_GATES);
+  const GATES_JSON = JSON.stringify(gates);
   return `
     globalThis[${K}] = "pending";
     (async () => {

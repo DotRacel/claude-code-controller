@@ -313,7 +313,7 @@ async function runInteractive(o: RunCtx) {
     onStderr: (s) => { logger.appendClaude(s); stderrTail = (stderrTail + s).slice(-4000); },
   });
   const okN = h.reports.filter((r) => r.located).length;
-  logger.log(`[cli] ready — ${okN}/${h.reports.length} gates rebound`);
+  logger.log(`[cli] ready — ${okN}/${h.reports.length} gates rebound (claude ${h.version ?? '?'} / profile ${h.profileId})`);
 
   let code: number | null = null;
   h.child.on('exit', (c) => { code = c; });
@@ -354,7 +354,7 @@ async function runHeadless(o: RunCtx) {
   });
 
   const okN = h.reports.filter((r) => r.located && r.reboundOk !== false).length;
-  console.log(`${ts()} claude remote-control launched — bridge redirected to your server (${okN}/${h.reports.length} gates).`);
+  console.log(`${ts()} claude remote-control launched — bridge redirected to your server (${okN}/${h.reports.length} gates, claude ${h.version ?? '?'} / profile ${h.profileId}).`);
   console.log(`${ts()} Open the web app on your phone, enter the credential, and your session will appear. Ctrl-C to stop.`);
 
   const stop = () => { try { h.kill(); } catch {} process.exit(0); };

@@ -19,7 +19,8 @@ import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'n
 import crypto from 'node:crypto';
 import { InspectorClient } from './ws-client.ts';
 import { getFreePort, waitForPort, treeKiller, DEFAULT_CLAUDE } from './attach.ts';
-import { GATES, INTERACTIVE_GATES, fill, buildLocatorExpr, buildInteractiveLocatorExpr, buildChildLocatorExpr, childDhsRebind, type RebindConfig } from './anchors.ts';
+import { fill, buildLocatorExpr, buildInteractiveLocatorExpr, buildChildLocatorExpr, childDhsRebind, type RebindConfig } from './anchors.ts';
+import { resolveProfile } from './profiles.ts';
 
 export interface GateRebindOpts extends RebindConfig {
   claudeBin?: string;
@@ -49,6 +50,10 @@ export interface GateRebindHandle {
   ic: InspectorClient;
   port: number;
   reports: GateReport[];
+  /** The injection profile chosen for this claude version. */
+  profileId: string;
+  /** The detected claude version string, or null if the probe failed. */
+  version: string | null;
   kill: () => void;
   isDead: () => boolean;
 }
@@ -120,6 +125,11 @@ export async function launchWithGatesRebound(opts: GateRebindOpts): Promise<Gate
     onStderr,
   } = opts;
 
+  // Detect the claude version FIRST and pick the matching injection profile — the gate set can
+  // differ between versions (see profiles.ts). Optimistic: unknown versions still get a profile.
+  const { profile, version, note } = await resolveProfile(claudeBin);
+  log(`[gate] claude version=${version ?? '(undetected)'} → profile=${profile.id} (${note})`);
+
   const port = await getFreePort();
   const token = '/cc-' + crypto.randomBytes(6).toString('hex');
   const wsUrl = `ws://127.0.0.1:${port}${token}`;
@@ -160,7 +170,7 @@ export async function launchWithGatesRebound(opts: GateRebindOpts): Promise<Gate
 
     // Locate all gates while still paused (Bun.file read works in the wait state).
     const GKEY = '__ccGates';
-    await ic.send('Runtime.evaluate', { expression: buildLocatorExpr(GKEY), returnByValue: true });
+    await ic.send('Runtime.evaluate', { expression: buildLocatorExpr(GKEY, profile.gates), returnByValue: true });
     let located: any = 'pending';
     for (let i = 0; i < 40 && located === 'pending'; i++) {
       await new Promise((r) => setTimeout(r, 120));
@@ -201,7 +211,7 @@ export async function launchWithGatesRebound(opts: GateRebindOpts): Promise<Gate
       log(`[gate] ${g.id}: ${rep.located ? `bp@L${g.line}C${g.col} aliases=${JSON.stringify(g.aliases)}` : `NOT SET (${rep.error})`}`);
     }
 
-    const specById = new Map(GATES.map((s) => [s.id, s]));
+    const specById = new Map(profile.gates.map((s) => [s.id, s]));
 
     // Dispatch rebinds on each pause, then resume.
     ic.on('Debugger.paused', async (p: any) => {
@@ -266,7 +276,7 @@ export async function launchWithGatesRebound(opts: GateRebindOpts): Promise<Gate
     log('[gate] releasing via Inspector.initialized');
     await ic.send('Inspector.initialized');
 
-    return { child, ic, port, reports, kill, isDead: () => dead };
+    return { child, ic, port, reports, profileId: profile.id, version, kill, isDead: () => dead };
   } catch (e) {
     kill();
     throw e;
@@ -290,6 +300,10 @@ export interface InteractiveHandle {
   ic: InspectorClient;
   port: number;
   reports: GateReport[];
+  /** The injection profile chosen for this claude version. */
+  profileId: string;
+  /** The detected claude version string, or null if the probe failed. */
+  version: string | null;
   kill: () => void;
   isDead: () => boolean;
 }
@@ -316,6 +330,10 @@ export async function launchInteractiveWithGatesRebound(opts: InteractiveLaunchO
     onStdout,
     onStderr,
   } = opts;
+
+  // Pick the injection profile for this claude version before spawning (see profiles.ts).
+  const { profile, version, note } = await resolveProfile(claudeBin);
+  log(`[int] claude version=${version ?? '(undetected)'} → profile=${profile.id} (${note})`);
 
   const port = await getFreePort();
   const token = '/cc-' + crypto.randomBytes(6).toString('hex');
@@ -349,7 +367,7 @@ export async function launchInteractiveWithGatesRebound(opts: InteractiveLaunchO
 
     // Locate the interactive gates while paused (Bun.file read works in the wait state).
     const GKEY = '__ccIntGates';
-    await ic.send('Runtime.evaluate', { expression: buildInteractiveLocatorExpr(GKEY), returnByValue: true });
+    await ic.send('Runtime.evaluate', { expression: buildInteractiveLocatorExpr(GKEY, profile.interactiveGates), returnByValue: true });
     let located: any = 'pending';
     for (let i = 0; i < 40 && located === 'pending'; i++) {
       await new Promise((r) => setTimeout(r, 120));
@@ -368,7 +386,7 @@ export async function launchInteractiveWithGatesRebound(opts: InteractiveLaunchO
     const reports: GateReport[] = [];
     const namesById = new Map<string, string[]>();
     const vars = { TOKEN: JSON.stringify(bridgeToken), URL: JSON.stringify(bridgeBaseUrl) };
-    const specById = new Map(INTERACTIVE_GATES.map((s) => [s.id, s]));
+    const specById = new Map(profile.interactiveGates.map((s) => [s.id, s]));
 
     for (const g of located.gates as any[]) {
       const rep: GateReport = { id: g.id, located: !g.error, error: g.error, line: g.line, col: g.col, aliases: g.names ? { fn: g.alias, rebind: g.names.join(',') } : undefined };
@@ -426,7 +444,7 @@ export async function launchInteractiveWithGatesRebound(opts: InteractiveLaunchO
     log('[int] releasing via Inspector.initialized');
     await ic.send('Inspector.initialized');
 
-    return { child, ic, port, reports, kill, isDead: () => dead };
+    return { child, ic, port, reports, profileId: profile.id, version, kill, isDead: () => dead };
   } catch (e) {
     kill();
     throw e;

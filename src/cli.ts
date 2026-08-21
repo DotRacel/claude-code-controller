@@ -102,6 +102,7 @@ async function main() {
     onStderr: (s) => process.stderr.write(`\x1b[2m[claude] ${s}\x1b[0m`),
   });
 
+  console.log(`${ts()} [cli] claude ${h.version ?? '?'} → profile ${h.profileId}`);
   console.log(`${ts()} [cli] gates: ` + h.reports.map((r) => `${r.id}=${r.located && r.reboundOk ? 'ok' : r.located ? 'located' : 'MISS'}`).join(' '));
 
   await Promise.race([wsPromise, new Promise((r) => setTimeout(r, OBSERVE_MS))]);

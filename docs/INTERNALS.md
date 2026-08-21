@@ -49,13 +49,44 @@ runtime instead of assuming a path, so this axis of breakage is fixed for any pa
 rename. Below 2.1.229 the gate guard expressions themselves haven't been probed — the sweep never
 got past locating the file before this fix.
 
+## Version-profiled injection
+
+The runtime string/structural anchors absorb a release's minified-**name** churn, but not a
+change to a guard's **code shape**. So the gate set is **version-profiled**: `src/injector/
+profiles.ts` defines `PROFILES`, each a gate set for a version range, and the injector detects the
+claude version at launch (`detectClaudeVersion` → `claude --version`) and picks one
+(`selectProfile`). `gate-rebind.ts` then locates/rebinds that profile's gates.
+
+Most gates are shared across every version — only the ones that actually drifted carry variants in
+`anchors.ts` (named constants assembled by `headlessGates(trustVariant)`). Known drift so far:
+
+| profile | version range | `dispatch.trust` |
+|---|---|---|
+| `legacy` | 2.1.229 – 2.1.237 | two functions: `enrollTrustedDeviceIfNeeded` + `getTrustedDeviceUnenrolledReason` |
+| `preflight` | ≥ 2.1.238 | one function: `preflightTrustedDeviceBlocking` |
+
+Selection is **optimistic and never refuses on the version number**: an unknown-newer claude gets
+the newest profile, an unknown-older one gets the oldest (logged as `optimistic-newer` /
+`optimistic-older`). A wrong guess degrades to a loud, specific "gate X did not locate" — never a
+silent wrong-rebind. When a future release drifts a gate, add a variant in `anchors.ts` and a
+`PROFILES` entry here.
+
+`node test/verify-injection.ts` runs the injector's own locators for the detected profile (no auth
+— idle `-p` host, read-only), and the `injection-compat` CI workflow runs it across a version
+matrix so "which versions are covered" stays answered as new releases ship.
+
+When that CI goes red — a release drifted a gate — [INJECTION-DRIFT-RUNBOOK.md](INJECTION-DRIFT-RUNBOOK.md)
+is the step-by-step: read the error string, get the binary, find the new code shape, decide
+widen-vs-branch, write the gate, reprofile, and verify (locate *and* rebind).
+
 ## Layout
 
 ```
 src/injector/
   ws-client.ts        WebKit inspector JSON-RPC over RFC6455 (ported from cc-injector)
   attach.ts           spawn + free-port + wait-for-port + connect + killTree (worker reaping)
-  anchors.ts          ★ version-fragile: gate specs, locators, rebinds
+  anchors.ts          ★ version-fragile: gate specs (named + variants), locators, rebinds
+  profiles.ts         version → profile selection + claude version detection
   gate-rebind.ts      the injector core: parent + child gate rebinding
   extract-anchors.ts  offline tool: locate gates/aliases in the running bundle
 src/server/
@@ -66,6 +97,7 @@ src/server/
   index.ts            REST (environments/work/sessions) + CCR v2 SSE data-plane
 src/cli.ts            test driver: server + injector + observe the whole handshake
 test/test-gates.ts    injector-only check (gates crossed + base-url redirected)
+test/verify-injection.ts  no-auth per-version gate-locate check (CI canary)
 ```
 
 ## Run
