@@ -48,10 +48,17 @@ surface objects must fail.
   backdrop can reach Send for a turn still awaiting approval.
 - **The header is in flow.** No status bar to share a strip with and nothing to blur behind, so
   there is no floating frosted layer and no `--header-h` measurement.
-- **The transcript is capped at 78ch and centred.** A 1440px line of serif prose is not prose
-  anyone reads. The cap is CSS on the items, *not* a wrapper element — `.chat > *` is what both the
+- **The transcript is capped and centred.** A 1440px line of serif prose is not prose anyone
+  reads. The cap is CSS on the items, *not* a wrapper element — `.dchat-scroll > *` is what both the
   stylesheet's flex rules and `test/ui-shot.ts`'s geometry probe key on, and a wrapper silently
-  emptied the probe.
+  emptied the probe. Two details the first cut got wrong: the cap is a **fixed length (45rem), not
+  `ch`** — `ch` resolves against each item's *own* font, so serif prose (17.5px) and a sans tool
+  card (16px) capped at "78ch" came out ~30px apart and their left edges did not line up; one fixed
+  measure keeps the whole column on one edge. And the user bubble carries **no `align-self`** — the
+  phone column is `align-items: stretch` (flex's default) so the bubble fills the width there, while
+  the desktop column is `align-items: center` so it centres here; a leftover `align-self: stretch`
+  from the phone-only days pinned the bubble to the left, out of line with the prose and tool cards
+  beside it.
 
 `useWide()` (App.tsx) listens to the media query rather than sampling it once: the breakpoint has to
 be crossable by dragging a window, and `ui-shot` proves both forms by resizing one browser. The
@@ -96,10 +103,10 @@ platforms — it was painting the first row as selected while nothing could sele
 raw text instead of completing. On a phone `↵` now completes the command too; it still does not
 *send* there (that is the button's job), but a newline in the middle of `/rc` was no use to anyone.
 
-## Three layout bugs, found by measuring
+## Layout bugs, found by measuring
 
-All three are the same family of mistake the phone shell hit, one layout system over — and none of
-them is visible to a unit test:
+All of these are the same family of mistake the phone shell hit, one layout system over — and none
+of them is visible to a unit test (`tsc` and `vite build` compile a broken cascade cleanly):
 
 - **The composer was off the bottom of the window.** A grid item's automatic minimum size is its
   content, so `.dmain` grew past its row instead of letting the transcript scroll. `min-height: 0`
@@ -109,13 +116,27 @@ them is visible to a unit test:
   *floating* header; this header is in flow, so that space was a gap. Restated inside the desktop
   block rather than left to specificity: both selectors are one class deep and `.chat` comes later
   in the file, so it would otherwise win.
+- **The user bubble was pinned left, and items were different widths.** `align-self: stretch`
+  survived from the phone into the centred desktop column, so the bubble sat at the left edge while
+  the prose and tool cards beside it were centred; and a `78ch` cap resolved per-font, so serif and
+  sans items came out ~30px apart. Unlike the three above — each caught once by reading the geometry
+  dump by eye — this one shipped, because nothing *asserted* the column. So `ui-shot --device
+  desktop` now measures every `.chat > *` and **fails the run** if the items are not one width on
+  one centred edge (with the composer on it and no horizontal overflow). The whole family now has a
+  gate, not just a dump to squint at.
 
 ## Reviewing it without a desktop
 
 ```bash
 npm run ui-preview                      # :8791 — drag the window across 900px
-npm run ui-shot -- --device desktop     # 1440×900 → artifacts/ui/desktop/*.png + geometry
+npm run ui-shot -- --device desktop     # 1440×900 → screenshots + geometry, and ASSERTS the column
+npm run ui-check                        # the same desktop assertions, as a bare pass/fail gate
 ```
+
+`ui-shot --device desktop` exits non-zero if the desktop layout assertions fail, so it is a real
+gate rather than a dump — CI (`.github/workflows/ci.yml`, the `web` job) runs it on every push and
+PR, after `vite build`, against a headless Chrome. `launchChromium` already passes `--no-sandbox`,
+so it runs on a CI runner as-is; set `CHROMIUM_BIN` if your chrome is not on `PATH` as `chromium`.
 
 The `desktop` profile is `mobile: false`, which skips touch emulation and the iPhone UA: with those
 on, every hover rule and the whole pointer path would be tested in a browser pretending not to have

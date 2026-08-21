@@ -164,7 +164,7 @@ const PROBE = `(() => {
   // every transcript item, so a card that renders as a 2px sliver is visible in the numbers
   const items = [...document.querySelectorAll('.chat > *')].map((e) => {
     const r = e.getBoundingClientRect();
-    return String(e.className).trim().split(/\\s+/)[0] + '(' + Math.round(r.height) + ')';
+    return String(e.className).trim().split(/\\s+/)[0] + '(h' + Math.round(r.height) + ' x' + Math.round(r.left) + ' w' + Math.round(r.width) + ')';
   });
   // The unit trap the installed app hit: under viewport-fit=cover with a translucent status bar,
   // WebKit resolves height:100% against an ICB that excludes the top inset (measured: 873 of 932
@@ -201,11 +201,53 @@ interface Shot {
   only?: string[];
 }
 
+/** Parse a probe item string "name(hN xN wN)" into numbers. */
+function parseItem(s: string): { name: string; h: number; x: number; w: number } | null {
+  const m = /^(.+?)\(h(-?\d+) x(-?\d+) w(-?\d+)\)$/.exec(s);
+  return m ? { name: m[1], h: +m[2], x: +m[3], w: +m[4] } : null;
+}
+
+/**
+ * Desktop transcript layout assertions — the check that was missing when the two-pane layout
+ * shipped with left-pinned user bubbles and font-dependent item widths. Every transcript item
+ * must share ONE column: same left edge, same width, centred in the pane, capped well inside it
+ * (not full-bleed), with the composer on the same edge and no horizontal overflow. Returns a list
+ * of human-readable failures (empty = pass). This is what turns ui-shot from a dumper into a gate.
+ */
+function checkDesktopLayout(probe: any): string[] {
+  const fails: string[] = [];
+  const items = ((probe.items ?? []) as string[]).map(parseItem).filter(Boolean) as { name: string; x: number; w: number }[];
+  if (!items.length) return fails;
+  const chat = probe.boxes?.find((b: any) => b.sel === '.chat');
+  if (!chat) return fails;
+  const paneCentre = (chat.left + chat.right) / 2;
+  const paneW = chat.right - chat.left;
+  const TOL = 2;
+
+  const lefts = items.map((i) => i.x);
+  const widths = items.map((i) => i.w);
+  const dLeft = Math.max(...lefts) - Math.min(...lefts);
+  const dWidth = Math.max(...widths) - Math.min(...widths);
+  if (dLeft > TOL) fails.push(`item left edges vary by ${dLeft.toFixed(1)}px — the column is not aligned`);
+  if (dWidth > TOL) fails.push(`item widths vary by ${dWidth.toFixed(1)}px — items do not share one measure`);
+  // Capped, not full-bleed: a readable column leaves clear margin inside the pane.
+  if (Math.max(...widths) > paneW - 40) fails.push(`items span ${Math.max(...widths)}px of a ${paneW.toFixed(0)}px pane — the readable cap is not applied`);
+  // Centred (the bug: a left-pinned user bubble beside centred prose).
+  const off = items.find((i) => Math.abs(i.x + i.w / 2 - paneCentre) > 3);
+  if (off) fails.push(`${off.name} is off-centre (centre ${(off.x + off.w / 2).toFixed(0)} vs pane ${paneCentre.toFixed(0)})`);
+  // Composer shares the column's edge.
+  const composer = probe.boxes?.find((b: any) => b.sel === '.composer-wrap');
+  if (composer && Math.abs(composer.left - items[0].x) > TOL) fails.push(`composer left ${composer.left} ≠ item left ${items[0].x}`);
+  if (probe.overflow?.length) fails.push(`horizontal overflow: ${JSON.stringify(probe.overflow.slice(0, 2))}`);
+  return fails;
+}
+
 async function main() {
   fs.mkdirSync(OUT, { recursive: true });
   const preview = await startPreview({ port: 0, username: 'uishot' });
   const base = `http://127.0.0.1:${preview.port}`;
   const consoleErrors: string[] = [];
+  const layoutFailures: string[] = []; // desktop geometry assertions that did not hold
 
   const shots: Shot[] = [
     { name: '01-session-list' },
@@ -405,6 +447,17 @@ async function main() {
       const H = probe.heights;
       console.log(`  heights: innerHeight ${H.innerHeight}  100dvh ${H.dvh}  100vh ${H.vhUnit}  ICB(100%) ${H.icb}${H.icb !== H.innerHeight ? `  ⚠ % is ${H.innerHeight - H.icb}px short` : ''}`);
       if (probe.items?.length) console.log(`  items: ${probe.items.join(' ')}`);
+      // Assert the desktop transcript column, not just print it: a left-pinned bubble or a
+      // font-dependent width is now a failed run, not a number someone has to notice by eye.
+      if (d.name === 'desktop' && probe.items?.length) {
+        const fails = checkDesktopLayout(probe);
+        if (fails.length) {
+          for (const f of fails) console.log(`  ✗ layout: ${f}`);
+          layoutFailures.push(...fails.map((f) => `${s.name}: ${f}`));
+        } else {
+          console.log(`  ✓ layout: items aligned, capped and centred`);
+        }
+      }
       for (const b of probe.boxes) console.log(`  ${b.sel.padEnd(15)} y ${String(b.top).padStart(7)} → ${String(b.bottom).padStart(7)}  h ${String(b.h).padStart(7)}  x ${b.left}→${b.right}  scroll ${b.scrollW}×${b.scrollH} / client ${b.clientW}×${b.clientH}`);
       if (probe.overflow.length) console.log(`  ⚠ horizontal overflow:`, JSON.stringify(probe.overflow));
       // The bug the phone showed: the shell must end exactly at the viewport bottom.
@@ -425,6 +478,12 @@ async function main() {
   if (consoleErrors.length) console.log(`\n⚠ console errors:\n  ${consoleErrors.slice(0, 8).join('\n  ')}`);
   console.log(`\nwrote ${written} screenshots to ${OUT}`);
   preview.close();
+  if (layoutFailures.length) {
+    console.log(`\n❌ ${layoutFailures.length} desktop layout assertion(s) failed:`);
+    for (const f of layoutFailures) console.log(`   • ${f}`);
+    process.exit(1);
+  }
+  console.log(consoleErrors.length ? '\n(desktop layout assertions passed)' : '\n✅ desktop layout assertions passed');
   process.exit(0);
 }
 

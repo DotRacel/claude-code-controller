@@ -52,7 +52,8 @@
     "verify-injection": "node test/verify-injection.ts",
     "render-history": "node test/render-history.ts",
     "ui-preview": "node test/ui-preview.ts",
-    "ui-shot": "node test/ui-shot.ts"
+    "ui-shot": "node test/ui-shot.ts",
+    "ui-check": "node test/ui-shot.ts --device desktop"
   },
   "devDependencies": {
     "@types/pg": "^8.21.0",

@@ -56,5 +56,16 @@ jobs:
       - run: npm run build # tsc --noEmit + vite build
         working-directory: web
 
+      # Assert the desktop transcript LAYOUT, not just that it compiles. ui-shot drives a headless
+      # chromium at 1440×900 against the built SPA and fails the run if the transcript column is
+      # misaligned, uncapped, or off-centre — the exact class of bug that shipped the two-pane
+      # layout with full-bleed, left-pinned messages. tsc/vite never sees a CSS cascade mistake;
+      # this does. The GitHub runner ships Chrome; launchChromium already passes --no-sandbox.
+      - name: Desktop layout assertions (ui-shot)
+        run: |
+          BIN=$(command -v google-chrome-stable || command -v google-chrome || command -v chromium-browser || command -v chromium)
+          echo "using chromium: $BIN"; "$BIN" --version
+          CHROMIUM_BIN="$BIN" node test/ui-shot.ts --device desktop
+
 # The server image is not built here: it is built, probed and pushed on tag, in release.yml.
 
