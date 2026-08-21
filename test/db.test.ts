@@ -13,7 +13,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/server/store.ts';
-import { createPool, ensureSchema, selectHistory, selectShapeStats, backfillShapes, type Pool } from '../src/server/db.ts';
+import { createPool, ensureSchema, selectHistory, selectShapeStats, backfillShapes, runBackfills, type Pool } from '../src/server/db.ts';
 import { verdictOf } from '../src/wire-shape.ts';
 import { createControllerServer } from '../src/server/index.ts';
 import { resolveImageBlob } from '../src/image-blob.ts';
@@ -130,6 +130,29 @@ test('every stored event carries its wire shape, and old rows can be backfilled'
     ['assistant:[text]', 'system:a_subtype_from_the_future', 'system:init'],
     'backfill reproduces exactly what insertEvents writes',
   );
+});
+
+test('the boot hook stamps old rows by itself, and says nothing when there is nothing to do', { skip }, async () => {
+  const pool = await db();
+  const a = new Store({ pool });
+  const s = await a.createReplSession(CRED, { dir: '/x' });
+  await a.appendEvents(s.id, [{ type: 'system', subtype: 'init' }, { type: 'result', subtype: 'success' }]);
+  await a.close();
+  // Rows as they would look on a deployment that upgraded into the shape column.
+  await pool.query(`update ${TEST_SCHEMA}.events set shape = null`);
+
+  const said: string[] = [];
+  await runBackfills(pool, (m) => said.push(m));
+  assert.deepEqual(
+    (await selectShapeStats(pool)).map((x) => x.shape).sort(),
+    ['result:success', 'system:init'],
+    'a boot with unstamped rows needs no manual command',
+  );
+  assert.ok(said.some((m) => m.includes('2 rows')), `expected a completion line, got ${JSON.stringify(said)}`);
+
+  said.length = 0;
+  await runBackfills(pool, (m) => said.push(m));
+  assert.deepEqual(said, [], 'every boot after the first is silent');
 });
 
 test('an image blob stays resolvable by its payload uuid', { skip }, async () => {

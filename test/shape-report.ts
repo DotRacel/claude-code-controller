@@ -9,9 +9,9 @@
  *
  *   DATABASE_URL=… node test/shape-report.ts [--backfill] [--all]
  *
- * `--backfill` stamps the shape onto rows stored before the column existed (idempotent, batched,
- * safe to interrupt and re-run) — do this once per deployment, or the report only sees new traffic.
- * The column itself needs no migration step: `ensureSchema` adds it on the next server boot.
+ * Upgrading needs no manual step: `ensureSchema` adds the column on the next boot and
+ * `runBackfills` stamps the older rows in the background while the server comes up. `--backfill`
+ * forces that same pass from here — for a report you want complete *now*, without a restart.
  * `--all` lists every shape, not just the ones needing a decision.
  *
  * `PG_SCHEMA=ccc_test` points it at the tests' own tables, which is how this file gets exercised

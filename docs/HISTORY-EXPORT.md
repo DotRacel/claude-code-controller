@@ -91,8 +91,8 @@ about each?" one aggregate query:
 
 ```bash
 DATABASE_URL=… npm run shape-report                  # just what needs a decision
-DATABASE_URL=… npm run shape-report -- --backfill    # once per deployment, see below
 DATABASE_URL=… npm run shape-report -- --all         # every shape, with verdicts and dates
+DATABASE_URL=… npm run shape-report -- --backfill    # force a stamping pass (normally automatic)
 PG_SCHEMA=ccc_test  npm run shape-report             # against the tests' own tables
 ```
 
@@ -100,10 +100,16 @@ Prefer this to an export whenever the question is about shapes: the report carri
 conversation content** — shape names, counts, first/last dates, and an event id to look at if you
 want one. The export is for when you need the payloads themselves.
 
-The column needs no migration step (`ensureSchema` adds it on the next server boot), but rows
-stored before it existed are `NULL` until `--backfill` stamps them. Run it once per deployment —
-batched, keyed off `shape is null`, safe to interrupt and re-run — otherwise the report only sees
-traffic since the upgrade, and the whole point is that the backlog is complete from day one.
+**Upgrading takes no manual step.** `ensureSchema` adds the column on the next boot, and
+`runBackfills` (`src/server/main.ts`, deliberately not awaited) stamps the rows that predate it
+while the server comes up — batched with a yield between batches, so a large `events` table cannot
+hold a connection or delay the first worker connecting. It logs only when it has work, so every
+boot after the first is silent, and a failure is logged rather than fatal: a deployment with some
+rows unstamped still works, and the report says how many are missing.
+
+That is the pattern for any derived column added later: the work queue is a predicate
+(`shape is null`), never a bookmark — nothing to keep in sync, interrupting costs nothing, and
+running twice is a no-op. `--backfill` remains for forcing a pass without a restart.
 
 The verdict is deliberately **not** stored. It is code: adapting a shape changes it, so a stored
 copy would start lying the moment someone did the work.

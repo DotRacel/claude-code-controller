@@ -235,6 +235,45 @@ export async function selectShapeStats(pool: Pool): Promise<ShapeStat[]> {
 }
 
 /**
+ * Data backfills that run themselves on boot, so adding a derived column never needs a human to
+ * remember a one-off command afterwards. `schema.sql` covers structure (every statement is
+ * `if not exists`); this covers the rows that predate it.
+ *
+ * The pattern each one follows, and the reason for each part:
+ *
+ *  - **The work queue is a predicate, not a bookmark** (`shape is null`). No migration table to
+ *    get out of sync, interrupting it costs nothing, and running it twice is a no-op.
+ *  - **Batched, with a yield between batches.** The pool is 10 connections wide and the server is
+ *    already serving; a single UPDATE over a large `events` table would hold one of them for the
+ *    whole scan.
+ *  - **Never fatal.** A backfill is a convenience, and a deployment that boots with some rows
+ *    unstamped still works — `shape-report` just says so and offers `--backfill`.
+ *  - **Silent when there is nothing to do**, which is every boot after the first.
+ *
+ * Two servers booting at once both scan the same rows and write the same values; the duplicated
+ * work is wasted but the result is identical, so no locking.
+ */
+export async function runBackfills(pool: Pool, log: (msg: string) => void = () => {}): Promise<void> {
+  // Deliberately modest: a batch holds that many whole payloads in memory, and one of them can be
+  // a 600 KB screenshot. This runs once per deployment — throughput is not the thing to optimise.
+  const BATCH = 500;
+  const YIELD_MS = 25;
+  let done = 0;
+  try {
+    for (;;) {
+      const n = await backfillShapes(pool, BATCH);
+      if (!n) break;
+      if (!done) log('backfilling event shapes (one-time, in the background)…');
+      done += n;
+      await new Promise((r) => setTimeout(r, YIELD_MS));
+    }
+    if (done) log(`event shapes backfilled: ${done} row${done === 1 ? '' : 's'}`);
+  } catch (e) {
+    log(`⚠️  shape backfill stopped: ${(e as Error).message} — run: npm run shape-report -- --backfill`);
+  }
+}
+
+/**
  * One batch of the shape backfill: the oldest `limit` rows with no shape yet, stamped with the
  * shape their stored payload implies. Returns how many were updated, so the caller can loop until
  * it returns 0. Idempotent — `shape is null` is the work queue, so an interrupted run just resumes.

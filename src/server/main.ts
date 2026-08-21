@@ -14,7 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createControllerServer, type ServerEvent } from './index.ts';
 import { attachWebChannel } from './web-channel.ts';
-import { createPool, ensureSchema, type Pool } from './db.ts';
+import { createPool, ensureSchema, runBackfills, type Pool } from './db.ts';
 
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -31,6 +31,10 @@ async function main() {
     pool = createPool(process.env.DATABASE_URL);
     await ensureSchema(pool);
     console.log(`${ts()} postgres connected, schema ensured`);
+    // Deliberately NOT awaited: rows that predate a derived column get stamped in the background
+    // while the server comes up, so an upgrade needs no manual step and a big table cannot delay
+    // the first worker connecting. Silent unless there is something to do (db.ts, runBackfills).
+    void runBackfills(pool, (m) => console.log(`${ts()} ${m}`));
   } else {
     console.log(`${ts()} ⚠️  DATABASE_URL not set — running IN MEMORY. Sessions and transcripts are lost on restart.`);
     console.log(`${ts()}    start the database with: docker compose up -d db   (see .env.example)`);
