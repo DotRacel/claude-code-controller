@@ -5,22 +5,28 @@
  * transcript, so switching sessions is a glance and a click rather than a back-and-forward. The
  * rows are the phone's own `SessionCard` (same digest, same badges) with one addition — the open
  * session is marked, which a one-screen-at-a-time layout never needed.
+ *
+ * The filter lives in DesktopShell rather than here, because ⌘↑/⌘↓ step through this list and they
+ * have to step through what is actually on screen — landing in a session the rail is filtering out
+ * would leave nothing highlighted and no way to see where you went.
  */
 import { useEffect, useState } from 'react';
 import type { SessionView } from '../../ws.ts';
-import { SessionCard, filterSessions, type Filter } from '../SessionList.tsx';
+import { SessionCard, type Filter } from '../SessionList.tsx';
 import { desktopSurfaces } from '../../render/desktop.tsx';
 import { Help, SignOut } from '../../icons.tsx';
 import { notifyPermission, requestNotifyPermission } from '../../notify.ts';
 
-export function Sidebar({ sessions, activeId, connection, onOpen, onLogout }: {
-  sessions: SessionView[];
+export function Sidebar({ shown, activeId, connection, filter, onFilter, onOpen, onLogout }: {
+  /** Already filtered by DesktopShell, in render order. */
+  shown: SessionView[];
   activeId: string | null;
   connection: string;
+  filter: Filter;
+  onFilter: (f: Filter) => void;
   onOpen: (s: SessionView) => void;
   onLogout: () => void;
 }) {
-  const [filter, setFilter] = useState<Filter>('active');
   const [perm, setPerm] = useState(notifyPermission());
   const [help, setHelp] = useState(false);
   const [confirmLogout, setConfirmLogout] = useState(false);
@@ -28,13 +34,12 @@ export function Sidebar({ sessions, activeId, connection, onOpen, onLogout }: {
 
   // Keep "2m 14s" honest while a tool runs.
   useEffect(() => {
-    const running = sessions.some((s) => s.digest?.toolStatus === 'running');
+    const running = shown.some((s) => s.digest?.toolStatus === 'running');
     if (!running) return;
     const t = setInterval(() => tick((n) => n + 1), 1000);
     return () => clearInterval(t);
-  }, [sessions]);
+  }, [shown]);
 
-  const shown = filterSessions(sessions, filter);
   const Help_ = desktopSurfaces.help;
   const Confirm = desktopSurfaces.confirm;
 
@@ -49,7 +54,7 @@ export function Sidebar({ sessions, activeId, connection, onOpen, onLogout }: {
       </div>
       <div className="chips">
         {(['active', 'all'] as Filter[]).map((f) => (
-          <button key={f} className={`chip${filter === f ? ' on' : ''}`} onClick={() => setFilter(f)}>
+          <button key={f} className={`chip${filter === f ? ' on' : ''}`} onClick={() => onFilter(f)}>
             {f === 'active' ? '活跃' : '全部'}
           </button>
         ))}

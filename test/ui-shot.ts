@@ -193,7 +193,13 @@ const PROBE = `(() => {
   };
 })()`;
 
-interface Shot { name: string; setup?: (cdp: CDP) => Promise<void>; noCredential?: boolean; }
+interface Shot {
+  name: string;
+  setup?: (cdp: CDP) => Promise<void>;
+  noCredential?: boolean;
+  /** Device names this shot applies to. Omitted = all of them. */
+  only?: string[];
+}
 
 async function main() {
   fs.mkdirSync(OUT, { recursive: true });
@@ -312,6 +318,25 @@ async function main() {
         await sleep(250);
       },
     },
+    {
+      // ⌘K has no phone counterpart, so on a phone this would just re-shoot the chat.
+      name: '15-session-switcher',
+      only: ['desktop'],
+      setup: async (c) => {
+        await c.eval(`(() => { const b = [...document.querySelectorAll('.session-card')].find(e => e.textContent.includes('racel-dev')); b && b.click(); })()`);
+        await sleep(900);
+        await c.eval(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true, bubbles: true }))`);
+        await sleep(300);
+        await c.eval(`(() => {
+          const i = document.querySelector('.palette-input');
+          if (!i) return;
+          const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+          set.call(i, 'bo');
+          i.dispatchEvent(new Event('input', { bubbles: true }));
+        })()`);
+        await sleep(300);
+      },
+    },
     { name: '11-auth-gate', noCredential: true },
     { name: '12-auth-gate-register', noCredential: true, setup: async (c) => {
       await c.eval(`[...document.querySelectorAll('.auth-tabs button')].find(b => b.textContent === '注册')?.click()`);
@@ -361,6 +386,7 @@ async function main() {
     console.log(`\n╔═ ${d.name} — ${d.width}×${d.height} @${d.dpr}x, ${kind}, ${insets}`);
 
     for (const s of shots) {
+      if (s.only && !s.only.includes(d.name)) continue;
       // Per shot, so clearing it for the gate cannot leak into a later one.
       if (s.noCredential) await cdp.send('Network.deleteCookies', { name: 'ccc_credential', url: base });
       else await cdp.send('Network.setCookie', { name: 'ccc_credential', value: preview.credential, url: base, path: '/' });

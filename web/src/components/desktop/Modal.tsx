@@ -39,13 +39,18 @@ function useDialogKeys(onDismiss: () => void, box: { current: HTMLElement | null
   }, [onDismiss, trap]);
 }
 
-export function Modal({ children, onDismiss, label, width, tall }: {
+export function Modal({ children, onDismiss, label, width, tall, align }: {
   children: ReactNode;
   onDismiss: () => void;
   label: string;
   width: number;
   /** Give it most of the viewport height — for a tool output, which is the one long thing. */
   tall?: boolean;
+  /**
+   * `top` sits it near the top edge instead of centring it. For the ⌘K palette: a list that grows
+   * downward as you type would otherwise walk up the screen with every keystroke.
+   */
+  align?: 'center' | 'top';
 }) {
   const box = useRef<HTMLDivElement | null>(null);
   useDialogKeys(onDismiss, box, true);
@@ -54,7 +59,7 @@ export function Modal({ children, onDismiss, label, width, tall }: {
       <div className="backdrop" onClick={onDismiss} />
       <div
         ref={box}
-        className={`modal${tall ? ' tall' : ''}`}
+        className={`modal${tall ? ' tall' : ''}${align === 'top' ? ' at-top' : ''}`}
         style={{ width }}
         role="dialog"
         aria-modal="true"

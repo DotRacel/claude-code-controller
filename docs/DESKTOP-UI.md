@@ -58,6 +58,44 @@ be crossable by dragging a window, and `ui-shot` proves both forms by resizing o
 socket, the session list and the open session all stay in `App.tsx` above the split, so crossing it
 keeps the session you were reading.
 
+## Keyboard
+
+Every shell binding takes a modifier, and that is the design rather than a shortcut list that
+happens to look like this. The composer is a `textarea` and it is where the caret almost always is,
+so a bare letter would either be swallowed by it or have to fight what someone is typing. With a
+modifier the bindings work from anywhere — mid-sentence included — which means there is no mode to
+enter, nothing to blur first, and no mode indicator that could drift out of sync with reality.
+
+| Key | |
+|---|---|
+| `⌘K` / `Ctrl+K` | session switcher (subsequence match over name, directory, branch) |
+| `⌘↑` / `⌘↓` | previous / next session |
+| `⌘↵` | send even with the slash picker open |
+| `Esc` | close a surface → close the slash picker → leave the composer |
+
+`Ctrl+K` is Firefox's web-search shortcut and `⌘K` belongs to the omnibox; both yield to a page that
+calls `preventDefault`. `⌘↑`/`⌘↓` do take over "caret to start/end of field" inside the composer —
+a deliberate trade, since switching sessions is the more common intent in a chat client.
+
+**Esc is a cascade, not one meaning.** It sheds the innermost thing first and only leaves the
+composer when there is nothing left to shed. `Modal` listens in the capture phase and stops the
+event, so a dialog always wins.
+
+**`⌘↑`/`⌘↓` walk the FILTERED list, in the rail's order.** This is why the 活跃/全部 filter lives in
+`DesktopShell` and not in `Sidebar`: stepping into a session the rail is hiding would leave nothing
+highlighted and no clue where you had gone. The ⌘K switcher deliberately searches *everything* —
+typing a name is an explicit request for that session, and not finding it because a chip is set
+would be worse.
+
+**The switcher is not a `LiveSurface`.** That contract exists so a surface driven by shared state
+cannot go missing on one platform; this one is driven by a key combination, and a phone has no way
+to trigger it. Forcing a phone implementation would mean writing something that can never open.
+
+The slash picker's keys (`↑`/`↓`/`Tab`/`↵`) are in `Composer.tsx` and therefore apply on both
+platforms — it was painting the first row as selected while nothing could select it, so `↵` sent the
+raw text instead of completing. On a phone `↵` now completes the command too; it still does not
+*send* there (that is the button's job), but a newline in the middle of `/rc` was no use to anyone.
+
 ## Three layout bugs, found by measuring
 
 All three are the same family of mistake the phone shell hit, one layout system over — and none of
@@ -82,8 +120,9 @@ npm run ui-shot -- --device desktop     # 1440×900 → artifacts/ui/desktop/*.p
 The `desktop` profile is `mobile: false`, which skips touch emulation and the iPhone UA: with those
 on, every hover rule and the whole pointer path would be tested in a browser pretending not to have
 a mouse. The shot scripts are the phone's — the sidebar reuses `.session-card` and the scroller
-keeps `.chat`, so the same selectors work — with one change: the tool-row opener now fires a real
-`click` as well as the mousedown/mouseup pair the phone needs.
+keeps `.chat`, so the same selectors work — with two changes: the tool-row opener now fires a real
+`click` as well as the mousedown/mouseup pair the phone needs, and a shot can carry
+`only: ['desktop']` so the ⌘K switcher does not re-shoot the chat on a device that cannot open it.
 
 **On comparing screenshots.** Several shots are not deterministic: the session list and the activity
 line render a live elapsed counter, so `01`, `03`, `04`, `05` and `10` differ between two runs of

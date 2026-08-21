@@ -219,6 +219,12 @@ reversed an earlier decision:
   float above; sitting 34pt up left a band of bare page background that read as a hole. The sheets
   keep the full inset, since their buttons are the primary action.
 
+**The slash picker is keyboard-navigable now**, which it looks like it always was: it painted the
+first row as selected while nothing could actually select it, so pressing return sent `/rc` as raw
+text instead of completing it. `↑`/`↓` move the highlight, `Tab`/`↵` take it, `Esc` sheds the picker
+before it gives up the field. Return still does not *send* on touch — that is the button's job — but
+it does complete, because a newline in the middle of a command name is no use to anyone.
+
 **The header floats and frosts.** `.header` (top bar + connection banner) is absolutely positioned
 over the transcript, which now starts at `y=0` and scrolls *under* it — so the 59pt behind the
 status bar and Dynamic Island is used rather than reserved, and content passing up there is blurred

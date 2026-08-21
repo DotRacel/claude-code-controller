@@ -200,6 +200,32 @@ textarea { font: inherit; }
     padding: 18px 0 16px;
   }
   .modal.tall { height: min(80vh, 720px); }
+  /* A palette grows downward as you type; centred, it would walk up the screen with every
+     keystroke. Pinned near the top it stays put and the list extends into empty space. */
+  .modal.at-top { top: 14vh; transform: translateX(-50%); }
+
+  /* ── ⌘K palette ── */
+  .palette { display: flex; flex-direction: column; min-height: 0; }
+  .palette-input {
+    flex: none; margin: 0 14px 8px; padding: 10px 12px;
+    background: var(--surface); border: 1px solid var(--line-2); border-radius: 10px;
+    color: var(--text); font: 400 15px/1.3 var(--sans); outline: none;
+  }
+  .palette-input::placeholder { color: var(--text-3); }
+  .palette-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 8px 2px; }
+  .palette-empty { padding: 14px; text-align: center; color: var(--text-3); font-size: 13.5px; }
+  .palette-row {
+    width: 100%; display: flex; align-items: baseline; gap: 12px;
+    padding: 9px 10px; border-radius: 8px; text-align: left;
+  }
+  .palette-row .l { flex: none; max-width: 55%; font: 600 14px/1.3 var(--sans); }
+  .palette-row .r { flex: 1; min-width: 0; text-align: right; font: 400 12.5px/1.3 var(--mono); color: var(--text-3); }
+  /* One highlight, driven by both the arrow keys and the pointer, so Enter never takes a row the
+     mouse is not on. A tint rather than a surface colour: the modal itself is --raised, so using
+     that here painted the selection in exactly the background it sits on — invisible. Same value
+     the slash picker uses, for one highlight idiom across both lists. */
+  .palette-row.on { background: rgba(245, 244, 239, .05); }
+  .palette-row.current .l::after { content: ' ·'; color: var(--accent); }
   /* The sheet body classes are reused verbatim (render/surface-parts.tsx is shared), so the one
      thing to restate is that the scroll region is the flexible one. */
   .modal .sheet-scroll { flex: 1; min-height: 0; overflow-y: auto; }
