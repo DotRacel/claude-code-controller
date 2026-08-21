@@ -10,10 +10,10 @@
  *  - dismissing the permission sheet by drag is a DENY, never an allow (0c)
  *  - haptics fire once per event and never during streaming (0c)
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ControlSocket, SessionView, Connection, PermissionAnswer } from '../ws.ts';
-import { reduce, initialState, localSend, markQuestionAnswered, clearPermission, turnActiveIn, type TranscriptState, type ToolCall } from '../model.ts';
-import { ItemView, type ItemActions } from './Transcript.tsx';
+import { useSession, useTranscriptScroll } from '../session.ts';
+import { ItemView } from './Transcript.tsx';
 import { phoneRenderers } from '../render/phone.tsx';
 import { Composer } from './Composer.tsx';
 import { PermissionSheet, OutputSheet, MenuSheet } from './Sheets.tsx';
@@ -21,8 +21,6 @@ import { toolDisplayName, blobUrl } from '../tools.ts';
 import { Back, Dots, WifiOff, Alert } from '../icons.tsx';
 import { haptic } from '../haptics.ts';
 import { showPushNotification } from '../notify.ts';
-
-const PIN_PX = 120;
 
 export function ChatView({ session, sock, connection, onBack, registerEvent, registerHistory }: {
   session: SessionView;
@@ -32,20 +30,18 @@ export function ChatView({ session, sock, connection, onBack, registerEvent, reg
   registerEvent: (cb: (sid: string, p: any) => void) => void;
   registerHistory: (cb: (sid: string, events: any[]) => void) => void;
 }) {
-  const [state, setState] = useState<TranscriptState>(() => initialState());
-  const [output, setOutput] = useState<ToolCall | null>(null);
+  const {
+    state, busy, offline, actions, send, stop, answerPermission, output, setOutput, permissionId, announce, meta,
+  } = useSession({ session, sock, connection, registerEvent, registerHistory });
+  const { scrollRef, pinned, onScroll, toBottom } = useTranscriptScroll([state.items, state.live.busy]);
   const [menu, setMenu] = useState(false);
-  const [pinned, setPinned] = useState(true);
-  const [announce, setAnnounce] = useState('');
-  const scrollRef = useRef<HTMLDivElement | null>(null);
   const screenRef = useRef<HTMLDivElement | null>(null);
   const headerRef = useRef<HTMLDivElement | null>(null);
-  const stateRef = useRef(state);
-  stateRef.current = state;
 
   // The header floats over the transcript (so the transcript can use the full screen, status-bar
   // strip included), which means the transcript's top padding has to equal the header's height —
   // and the connection banner makes that height change at runtime. Measured, not hard-coded.
+  // Phone-only: no other layout puts the header on top of the scroller.
   useEffect(() => {
     const head = headerRef.current;
     const screen = screenRef.current;
@@ -57,110 +53,10 @@ export function ChatView({ session, sock, connection, onBack, registerEvent, reg
     ro.observe(head);
     return () => ro.disconnect();
   }, []);
-  // A reconnect re-subscribes and so backfills again (App.tsx); read the status through a ref so
-  // that second backfill sees the current one, not whatever it was when the session was opened.
-  const activeRef = useRef(false);
-  activeRef.current = session.status === 'active';
 
-  // Seed "the agent holds the turn" from the list digest, so reopening a busy session shows
-  // the Stop button immediately instead of waiting for the next event.
-  useEffect(() => {
-    setState(() => {
-      const s = initialState();
-      return activeRef.current && session.digest?.turnActive ? { ...s, live: { ...s.live, busy: true } } : s;
-    });
-    sock.subscribe(session.id);
-    registerHistory((sid, evs) => {
-      if (sid !== session.id) return;
-      let s = initialState();
-      for (const e of evs) s = reduce(s, e, { isHistory: true });
-      // The backfill replaces the whole state, seed included, so `busy` has to be re-derived here
-      // — from the events themselves rather than the digest, which was a snapshot taken when the
-      // session list was built. A session whose claude is gone is never mid-turn.
-      setState({ ...s, live: { ...s.live, busy: activeRef.current && turnActiveIn(evs) } });
-    });
-    registerEvent((sid, payload) => {
-      if (sid !== session.id) return;
-      setState((prev) => reduce(prev, payload, { isHistory: false }));
-    });
-    return () => { registerEvent(() => {}); registerHistory(() => {}); };
-  }, [session.id]);
-
-  // Autoscroll while pinned. Items and the sheets both move the bottom.
-  useEffect(() => {
-    if (!pinned) return;
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [state.items, state.live.busy, pinned]);
-
-  // The transcript also shrinks without any new item: the composer grows line by line as you
-  // type (and the slash picker opens above it). Without this the last message slides behind the
-  // composer while you are writing about it.
-  const pinnedRef = useRef(pinned);
-  pinnedRef.current = pinned;
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el || typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(() => { if (pinnedRef.current) el.scrollTop = el.scrollHeight; });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  // A permission arriving is the one thing worth interrupting you for (0c: notification haptic).
-  const permId = state.live.permission?.requestId;
-  useEffect(() => {
-    if (!permId) return;
-    haptic('warning');
-    setAnnounce('需要审批');
-    if (document.visibilityState !== 'visible') {
-      showPushNotification(`${toolDisplayName(state.live.permission!.toolName)} 需要你的批准`, { force: true });
-    }
-  }, [permId]);
-
-  const busy = state.live.busy;
-  useEffect(() => { if (!busy) setAnnounce('回合完成'); }, [busy]);
-
-  const offline = connection !== 'online' || session.status !== 'active';
-
-  const handlers: ItemActions = useMemo(() => ({
-    onOpenOutput: (call) => setOutput(call),
-    onAnswerQuestion: (item, answers, freeform) => {
-      const updatedInput: Record<string, unknown> = { questions: item.questions, answers };
-      if (freeform) updatedInput.response = freeform;
-      sock.respondPermission(session.id, item.requestId, { behavior: 'allow', updatedInput });
-      const summary = Object.entries(answers).map(([q, a]) => `${q} → ${a}`).join('\n') || (freeform ?? '已跳过');
-      setState((prev) => markQuestionAnswered(prev, item.requestId, summary));
-    },
-    // A stripped image resolves to the blob route (the cookie authenticates the <img>); an
-    // unstripped one already carries its own data URL.
-    imageUrl: (att) => att.dataUrl ?? (att.ref ? blobUrl(session.id, att.ref) : undefined),
-  }), [session.id, sock]);
-
-  const answerPermission = (a: PermissionAnswer) => {
-    const req = stateRef.current.live.permission;
-    if (!req) return;
-    sock.respondPermission(session.id, req.requestId, a);
-    setState((prev) => clearPermission(prev));
-  };
-
-  const send = (text: string) => {
-    sock.sendMessage(session.id, text);
-    setState((prev) => localSend(prev, text, prev.live.busy));
-  };
-
-  const stop = () => {
-    sock.control(session.id, 'interrupt');
-    setState((prev) => ({ ...prev, live: { ...prev.live, busy: false, running: undefined, thinking: false } }));
-  };
-
-  const toBottom = () => {
-    setPinned(true);
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  };
-
-  const meta = [session.machine, session.branch, state.live.model, state.live.permissionMode]
-    .filter(Boolean).join(' · ');
+  // The one haptic worth firing unprompted (0c: notification haptic). A desktop has nothing to
+  // fire, which is why this lives here and not in the hook.
+  useEffect(() => { if (permissionId) haptic('warning'); }, [permissionId]);
 
   return (
     <div className="screen" ref={screenRef}>
@@ -184,13 +80,10 @@ export function ChatView({ session, sock, connection, onBack, registerEvent, reg
       <div
         className="scroll chat"
         ref={scrollRef}
-        onScroll={(e) => {
-          const el = e.currentTarget;
-          setPinned(el.scrollHeight - el.scrollTop - el.clientHeight < PIN_PX);
-        }}
+        onScroll={onScroll}
       >
         {state.items.map((it, i) => (
-          <ItemView key={it.id} it={it} isLast={i === state.items.length - 1} h={handlers} renderers={phoneRenderers} />
+          <ItemView key={it.id} it={it} isLast={i === state.items.length - 1} h={actions} renderers={phoneRenderers} />
         ))}
         {/* Offline, nothing is running here to report — a spinner would just keep promising work
             that no connected claude is doing. */}
