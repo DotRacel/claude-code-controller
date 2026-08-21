@@ -18,7 +18,8 @@
  * actions the shell offers, are shared.
  */
 import type { ComponentType } from 'react';
-import type { Item, ToolCall } from '../model.ts';
+import type { Item, ToolCall, PermissionRequest } from '../model.ts';
+import type { PermissionAnswer } from '../ws.ts';
 import type { ImageAttachment } from '../../../src/image-blob.ts';
 
 /**
@@ -53,3 +54,62 @@ export type ItemRenderers = { [K in Item['kind']]: ComponentType<ItemProps<K>> }
 
 /** The animation class, shared by every renderer so the rule lives in one place. */
 export const enterClass = (isLast: boolean): string | undefined => (isLast ? 'enter' : undefined);
+
+/**
+ * Take these kinds from another platform's renderers, as an explicit list.
+ *
+ * Spreading a whole `ItemRenderers` into a new one — `{...phoneRenderers, tools: X}` — would
+ * silently defeat the check this whole file exists for: the spread supplies every key, so adding a
+ * kind to `Item` compiles clean again and the second platform is back to failing invisibly.
+ *
+ * The return type is `Pick<ItemRenderers, K>`, so the object literal is still settled key by key:
+ * a new kind is in neither the inherit list nor the overrides, and the assignment fails. The list
+ * also says something worth saying — "I looked at these and the other platform's version is right
+ * here too" — which a bare spread does not.
+ */
+export function inherit<K extends Item['kind']>(from: ItemRenderers, keys: readonly K[]): Pick<ItemRenderers, K> {
+  const out = {} as Pick<ItemRenderers, K>;
+  for (const k of keys) out[k] = from[k];
+  return out;
+}
+
+/**
+ * The modal surfaces — the half of the UI that `ItemRenderers` cannot reach.
+ *
+ * These are driven by `live` (a pending permission, a tool output someone asked to see) and by the
+ * session list, not by transcript items, so nothing forced a second platform to implement them.
+ * That gap matters more than a missing item renderer, not less: a permission surface that fails to
+ * appear leaves the worker blocked on an answer that is never coming, with no sign on screen.
+ *
+ * A phone answers all five with a bottom sheet; a desktop answers four with a centred modal and
+ * one with a popover. That difference is the point — only the SET is shared.
+ */
+export type LiveSurfaces = {
+  permission: ComponentType<{
+    req: PermissionRequest;
+    cwd?: string;
+    onAnswer: (a: PermissionAnswer) => void;
+    /**
+     * Dismissing is a DENY, never an allow, and never a silent close (0c). Whatever the platform's
+     * dismiss gesture is — a drag, a backdrop click, Escape — it has to answer, or the worker
+     * waits forever.
+     */
+    onDismiss: () => void;
+  }>;
+  output: ComponentType<{ call: ToolCall; onDismiss: () => void }>;
+  menu: ComponentType<{
+    meta: string;
+    mode?: string;
+    onMode: (m: string) => void;
+    onEnd: () => void;
+    onDismiss: () => void;
+  }>;
+  help: ComponentType<{ onDismiss: () => void }>;
+  confirm: ComponentType<{
+    title: string;
+    body: string;
+    confirmLabel: string;
+    onConfirm: () => void;
+    onDismiss: () => void;
+  }>;
+};

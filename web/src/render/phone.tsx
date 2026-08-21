@@ -15,12 +15,13 @@
  */
 import { Fragment, useRef, useState } from 'react';
 import type { Item, ToolCall, TodoTask, Question } from '../model.ts';
-import type { ImageAttachment } from '../../../src/image-blob.ts';
-import { type ItemActions, type ItemRenderers, enterClass } from './contract.ts';
-import { toolDisplayName, toolArg, splitPath, argIsPath, resultLine, byteLabel, imageKindLabel, durationLabel } from '../tools.ts';
+import { type ItemActions, type ItemRenderers, type LiveSurfaces, enterClass } from './contract.ts';
+import { PermissionSheet, OutputSheet, MenuSheet, HelpSheet, ConfirmSheet } from '../components/Sheets.tsx';
+import { ToolRowBody, ImageStrip, toolRowLabel } from './parts.tsx';
+import { durationLabel } from '../tools.ts';
 import { renderMarkdown } from '../md.ts';
 import { haptic } from '../haptics.ts';
-import { Check, Alert, Brain, ClaudeMark, Picture } from '../icons.tsx';
+import { Check, Alert, Brain, ClaudeMark } from '../icons.tsx';
 
 const LONG_PRESS_MS = 400;
 /**
@@ -137,48 +138,7 @@ function BgTaskCard({ it, cls }: { it: Extract<Item, { kind: 'bgtask' }>; cls?: 
   );
 }
 
-/**
- * Images a tool returned. They are NOT loaded with the transcript: the server replaced the base64
- * with a reference (src/image-blob.ts), so this renders a placeholder and fetches the bytes only
- * when tapped. An attachment that already carries its data (an unstripped payload, a fixture)
- * shows immediately — there is nothing left to save by hiding it.
- */
-function ImageStrip({ images, h }: { images: ImageAttachment[]; h: ItemActions }) {
-  return (
-    <div className="tool-images">
-      {images.map((att, i) => <ImageAttachmentView key={att.ref ?? i} att={att} url={h.imageUrl(att)} />)}
-    </div>
-  );
-}
 
-function ImageAttachmentView({ att, url }: { att: ImageAttachment; url: string | undefined }) {
-  // Data already in hand renders straight away; a reference waits for a tap.
-  const [show, setShow] = useState(!!att.dataUrl);
-  const [failed, setFailed] = useState(false);
-  const kind = imageKindLabel(att.mediaType);
-  const size = byteLabel(att.bytes);
-  const caption = [kind, size].filter(Boolean).join(' · ');
-
-  if (!url) return <div className="img-att gone">图片已不可用</div>;
-  if (failed) return <div className="img-att gone">图片加载失败 · {caption}</div>;
-  if (!show) {
-    return (
-      <button className="img-att" onClick={() => setShow(true)} aria-label={`加载图片，${caption}`}>
-        {/* An SVG, not an emoji: the self-hosted fonts carry no emoji glyphs, so 🖼 renders as
-            tofu wherever the system font does not supply one. */}
-        <span className="img-icon" aria-hidden="true"><Picture size={14} /></span>
-        <span className="img-meta">{caption}</span>
-        <span className="img-cta">点击加载</span>
-      </button>
-    );
-  }
-  // A new tab is the phone's own image viewer: pinch-zoom and save come for free.
-  return (
-    <a className="img-att-shown" href={url} target="_blank" rel="noreferrer">
-      <img src={url} alt={`工具返回的图片 · ${caption}`} onError={() => setFailed(true)} />
-    </a>
-  );
-}
 
 function ToolGroup({ calls, cls, h }: { calls: ToolCall[]; cls?: string; h: ItemActions }) {
   const bad = calls.some((c) => c.status === 'error');
@@ -202,9 +162,6 @@ function ToolRow({ call, onOpen }: { call: ToolCall; onOpen: (c: ToolCall) => vo
   const touched = useRef(false); // a touch also emits synthetic mouse events; ignore those
   const from = useRef<{ x: number; y: number } | null>(null); // where the finger landed
   const scrolled = useRef(false); // …and whether it then moved enough to be a scroll
-  const label = toolDisplayName(call.name);
-  const arg = toolArg(call.name, call.input);
-  const res = resultLine(call);
   const openable = !!call.result;
 
   const begin = () => {
@@ -253,27 +210,13 @@ function ToolRow({ call, onOpen }: { call: ToolCall; onOpen: (c: ToolCall) => vo
       onMouseUp={() => { if (!touched.current) end(true); }}
       onMouseLeave={() => { if (!touched.current) end(false); }}
       disabled={!openable}
-      aria-label={`${label}${arg ? `, ${arg}` : ''}, ${res?.text ?? ''}${openable ? '，双击查看输出' : ''}`}
+      aria-label={toolRowLabel(call, openable, '，双击查看输出')}
     >
-      <div className="tool-head">
-        {label} {arg && <span className="arg">{argIsPath(call.name) ? <PathArg p={arg} /> : arg}</span>}
-        {/* an Edit's counts ride along with the path instead of taking a line of their own. The
-            separating space is outside .delta so a long path can still push the pair onto the next
-            line rather than overflowing (.delta itself never breaks). */}
-        {res?.delta && <>{' '}<span className="delta"><span className="add">+{res.delta.add}</span> <span className="del">−{res.delta.del}</span></span></>}
-      </div>
-      {res && !res.delta && (
-        <div className={`tool-result-line${res.isError ? ' err' : ''}`}>{res.text}</div>
-      )}
+      <ToolRowBody call={call} />
     </button>
   );
 }
 
-/** `src/routes/checkout/` dim + `handler.ts` bright — the filename is what you scan for. */
-function PathArg({ p }: { p: string }) {
-  const { dir, base } = splitPath(p);
-  return <>{dir && <span className="dim">{dir}</span>}{base}</>;
-}
 
 function TodoCard({ tasks, cls }: { tasks: TodoTask[]; cls?: string }) {
   return (
@@ -369,3 +312,19 @@ function QuestionCard({ it, cls, onAnswer }: {
     </div>
   );
 }
+
+/**
+ * The phone's answer to all five modal surfaces: a bottom sheet, every time (Sheet.tsx owns the
+ * drag-to-dismiss, and the permission sheet's dismiss is a deny — see LiveSurfaces).
+ *
+ * These are one-to-one with the components Sheets.tsx already exported, so this object is a
+ * declaration rather than an adapter: its value is that `LiveSurfaces` now fails to compile when a
+ * surface is added and a platform has not answered for it.
+ */
+export const phoneSurfaces: LiveSurfaces = {
+  permission: PermissionSheet,
+  output: OutputSheet,
+  menu: MenuSheet,
+  help: HelpSheet,
+  confirm: ConfirmSheet,
+};
