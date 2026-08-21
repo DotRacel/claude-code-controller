@@ -25,10 +25,13 @@ const BIN = process.env.CHROMIUM_BIN || 'chromium';
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * Two targets, because the bugs differ between them. `phone` is a plain browser tab; `pro-max-pwa`
- * is the installed web app on an iPhone 15 Pro Max — 430×932, and crucially a real top inset
- * (59pt of Dynamic Island) and bottom inset (34pt of home indicator) plus
- * `display-mode: standalone`, none of which a bare --window-size gives you.
+ * Three targets, because the bugs differ between them. `phone` is a plain browser tab;
+ * `pro-max-pwa` is the installed web app on an iPhone 15 Pro Max — 430×932, and crucially a real
+ * top inset (59pt of Dynamic Island) and bottom inset (34pt of home indicator) plus
+ * `display-mode: standalone`, none of which a bare --window-size gives you. `desktop` is the other
+ * side of the 900px breakpoint, and has to be `mobile: false`: with touch emulation and an iPhone
+ * UA the two-pane shell would still render, but every hover rule and the tool row's pointer path
+ * would be tested in a browser pretending not to have a mouse.
  */
 interface Device {
   name: string;
@@ -37,9 +40,12 @@ interface Device {
   dpr: number;
   insets?: { top: number; bottom: number; left: number; right: number };
   standalone?: boolean;
+  /** Default true. False means a real desktop browser: no touch, no phone UA. */
+  mobile?: boolean;
 }
 const DEVICES: Device[] = [
   { name: 'phone', width: 390, height: 844, dpr: 3 },
+  { name: 'desktop', width: 1440, height: 900, dpr: 2, mobile: false },
   {
     name: 'pro-max-pwa', width: 430, height: 932, dpr: 3,
     insets: { top: 59, bottom: 34, left: 0, right: 0 },
@@ -251,12 +257,14 @@ async function main() {
       setup: async (c) => {
         await c.eval(`(() => { const b = [...document.querySelectorAll('.session-card')].find(e => e.textContent.includes('racel-dev')); b && b.click(); })()`);
         await sleep(900);
-        // ToolRow opens on mousedown/mouseup (it shares the code path with a touch long-press),
-        // so a bare .click() does nothing.
+        // Both platforms in one script: the phone's ToolRow opens on mouseup (it shares the code
+        // path with the touch long-press), the desktop's on a real click — and a synthetic
+        // mousedown/mouseup pair does not produce one.
         await c.eval(`(() => {
           const r = document.querySelectorAll('.tool-row:not([disabled])')[1];
           r.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
           r.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+          r.click();
         })()`);
         await sleep(500);
       },
@@ -334,19 +342,23 @@ async function main() {
     await cdp.send('Log.enable');
     cdp.on('Log.entryAdded', (p) => { if (p.entry.level === 'error') consoleErrors.push(`[${d.name}] ${p.entry.text}`); });
     cdp.on('Runtime.consoleAPICalled', (p) => { if (p.type === 'error') consoleErrors.push(`[${d.name}] ${p.args.map((a: any) => a.value ?? a.description).join(' ')}`); });
-    await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
-    await cdp.send('Emulation.setUserAgentOverride', {
-      userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1',
-    });
+    const mobile = d.mobile !== false;
+    if (mobile) {
+      await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+      await cdp.send('Emulation.setUserAgentOverride', {
+        userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1',
+      });
+    }
     // mobile:true is what makes dvh/safe-area/touch behave like a device, not a small window.
     await cdp.send('Emulation.setDeviceMetricsOverride', {
-      width: d.width, height: d.height, deviceScaleFactor: d.dpr, mobile: true,
+      width: d.width, height: d.height, deviceScaleFactor: d.dpr, mobile,
       screenWidth: d.width, screenHeight: d.height,
     });
     await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: d.insets ?? {} });
 
     const insets = d.insets ? `insets ${d.insets.top}/${d.insets.bottom}` : 'no insets';
-    console.log(`\n╔═ ${d.name} — ${d.width}×${d.height} @${d.dpr}x, ${d.standalone ? 'standalone (--app)' : 'browser tab'}, ${insets}`);
+    const kind = d.standalone ? 'standalone (--app)' : mobile ? 'browser tab' : 'desktop browser';
+    console.log(`\n╔═ ${d.name} — ${d.width}×${d.height} @${d.dpr}x, ${kind}, ${insets}`);
 
     for (const s of shots) {
       // Per shot, so clearing it for the gate cannot leak into a later one.

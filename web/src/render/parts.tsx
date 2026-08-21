@@ -1,5 +1,5 @@
 /**
- * parts.tsx — the pieces of a tool card that carry no interaction, shared by both platforms.
+ * parts.tsx — presentational pieces shared by both platforms.
  *
  * A tool row differs between a phone and a desktop in exactly one way: what opens it. The phone
  * hand-rolls touchstart/long-press/scroll-slop because iOS does not reliably cancel a touch that
@@ -7,14 +7,18 @@
  * the headline argument, the ± counts, the one-line result, the images underneath — is identical,
  * and duplicating it would mean two places to fix the next time a tool needs a different summary.
  *
- * So the *body* lives here and each platform supplies its own button around it.
+ * So the *body* lives here and each platform supplies its own button around it. The activity line
+ * and the connection banner are here for the simpler reason that they are word-for-word the same on
+ * a phone and on a desktop — they report what the agent is doing and whether we can reach it, and
+ * neither answer changes with the pointer.
  */
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ToolCall } from '../model.ts';
 import type { ImageAttachment } from '../../../src/image-blob.ts';
 import type { ItemActions } from './contract.ts';
 import { toolDisplayName, toolArg, splitPath, argIsPath, resultLine, byteLabel, imageKindLabel } from '../tools.ts';
-import { Picture } from '../icons.tsx';
+import { Picture, WifiOff, Alert } from '../icons.tsx';
+import type { Connection } from '../ws.ts';
 
 /** `src/routes/checkout/` dim + `handler.ts` bright — the filename is what you scan for. */
 export function PathArg({ p }: { p: string }) {
@@ -92,4 +96,110 @@ function ImageAttachmentView({ att, url }: { att: ImageAttachment; url: string |
       <img src={url} alt={`工具返回的图片 · ${caption}`} onError={() => setFailed(true)} />
     </a>
   );
+}
+
+/**
+ * One line under the transcript for as long as the agent holds the turn. The leading glyph is
+ * chosen by what the agent is *actually* doing, not merely by `busy`: the thinking star is the
+ * CLI's reasoning animation and would be a lie while a tool runs or prose streams in.
+ */
+export function ActivityLine({ running, thinking, tokens }: {
+  running?: { name: string; arg: string; since: number };
+  thinking?: boolean;
+  tokens?: number;
+}) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [running?.since]);
+
+  if (running) {
+    const s = Math.max(0, Math.round((Date.now() - running.since) / 1000));
+    const dur = s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
+    const arg = running.arg ? ` · ${running.arg.split('\n')[0].slice(0, 40)}` : '';
+    return (
+      <div className="activity">
+        <span className="dot run pulse" aria-hidden="true" />
+        {`${toolDisplayName(running.name)}${arg} · ${dur}`}
+      </div>
+    );
+  }
+  if (thinking) {
+    return (
+      <div className="activity">
+        <ThinkingSpinner />
+        {tokens ? `思考中 · ${tokens} tokens` : '思考中'}
+      </div>
+    );
+  }
+  // Working, but neither reasoning nor inside a tool — streaming prose, or between steps. A quiet
+  // pulse says "still going" without claiming which.
+  return <div className="activity"><span className="dot run pulse" aria-hidden="true" />运行中</div>;
+}
+
+/** The CLI's own thinking glyph: it grows to a full star and shrinks back, one frame at a time. */
+const FRAMES = ['·', '✢', '✳', '✶', '✻', '✽'];
+const SPINNER_MS = 120;
+
+function ThinkingSpinner() {
+  const [i, setI] = useState(0);
+  const dir = useRef(1);
+
+  useEffect(() => {
+    // 0c: reduce-motion freezes every animation, and this one is driven by JS, so the media query
+    // in the stylesheet cannot reach it.
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+    const t = setInterval(() => {
+      setI((prev) => {
+        if (prev === FRAMES.length - 1) dir.current = -1;
+        if (prev === 0) dir.current = 1;
+        return prev + dir.current;
+      });
+    }, SPINNER_MS);
+    return () => clearInterval(t);
+  }, []);
+
+  return <span className="spin" aria-hidden="true">{FRAMES[i]}</span>;
+}
+
+export function Banner({ connection, sessionOffline, machine, onRetry }: {
+  connection: Connection; sessionOffline: boolean; machine?: string; onRetry: () => void;
+}) {
+  if (connection === 'connecting') {
+    return (
+      <div className="banner warning">
+        <span className="spinner" />
+        <div className="banner-text">
+          <div className="t1">重新连接中…</div>
+          <div className="t2">会话仍在 {machine || '你的机器'} 上继续运行</div>
+        </div>
+      </div>
+    );
+  }
+  if (connection === 'offline') {
+    return (
+      <div className="banner danger">
+        <WifiOff size={15} stroke="#e07a5f" />
+        <div className="banner-text">
+          <div className="t1">已离线</div>
+          <div className="t2">恢复连接后会自动继续</div>
+        </div>
+        <button className="link" style={{ color: 'var(--text)' }} onClick={onRetry}>重试</button>
+      </div>
+    );
+  }
+  if (sessionOffline) {
+    return (
+      <div className="banner neutral">
+        <Alert size={15} stroke="#8a8781" />
+        <div className="banner-text">
+          <div className="t1">{machine || '这台机器'} 上的 claude 没有连着</div>
+          <div className="t2">转录仍在，回到终端继续会话即可恢复</div>
+        </div>
+      </div>
+    );
+  }
+  return null;
 }

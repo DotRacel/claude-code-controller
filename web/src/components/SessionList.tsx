@@ -16,7 +16,11 @@ import { Lock, Check, Help, SignOut } from '../icons.tsx';
 import { HelpSheet, ConfirmSheet } from './Sheets.tsx';
 import { notifyPermission, requestNotifyPermission } from '../notify.ts';
 
-type Filter = 'active' | 'all';
+export type Filter = 'active' | 'all';
+
+/** The one place that decides what "活跃" means, so the sidebar and the phone list agree. */
+export const filterSessions = (sessions: SessionView[], f: Filter): SessionView[] =>
+  sessions.filter((s) => (f === 'active' ? s.status === 'active' : true));
 
 function relTime(ts: number): string {
   const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
@@ -52,7 +56,7 @@ export function SessionList({ sessions, connection, onOpen, onLogout }: {
     return () => clearInterval(t);
   }, [sessions]);
 
-  const shown = sessions.filter((s) => (filter === 'active' ? s.status === 'active' : filter === 'all'));
+  const shown = filterSessions(sessions, filter);
 
   return (
     <div className="screen">
@@ -99,14 +103,14 @@ export function SessionList({ sessions, connection, onOpen, onLogout }: {
   );
 }
 
-function SessionCard({ s, onOpen }: { s: SessionView; onOpen: (s: SessionView) => void }) {
+export function SessionCard({ s, onOpen, active }: { s: SessionView; onOpen: (s: SessionView) => void; active?: boolean }) {
   const d = s.digest ?? ({ toolCalls: 0, pendingApproval: false, turnActive: false } as SessionView['digest']);
   const running = d.toolStatus === 'running' && s.status === 'active';
   const attention = d.pendingApproval;
 
   return (
     <button
-      className={`session-card${attention ? ' attention' : ''}${!d.turnActive && s.status !== 'active' ? ' done' : ''}`}
+      className={`session-card${attention ? ' attention' : ''}${!d.turnActive && s.status !== 'active' ? ' done' : ''}${active ? ' current' : ''}`}
       onClick={() => onOpen(s)}
     >
       <div className="session-top">

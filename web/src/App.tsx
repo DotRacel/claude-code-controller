@@ -1,10 +1,29 @@
-import { useState, useEffect, useRef, type ReactNode } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { ControlSocket, getCredential, setCredential, clearCredential, type SessionView, type Connection } from './ws';
 import { showPushNotification, pushNotificationFrom } from './notify';
 import { checkToken } from './auth.ts';
 import { SessionList } from './components/SessionList.tsx';
 import { ChatView } from './components/ChatView.tsx';
 import { AuthGate } from './components/AuthGate.tsx';
+import { DesktopShell } from './components/desktop/DesktopShell.tsx';
+
+/**
+ * Where the two layouts part company. Live, not once at startup: the breakpoint has to be
+ * crossable by dragging a window, both because people do that and because `ui-shot` proves each
+ * form by resizing one browser.
+ */
+const WIDE = '(min-width: 900px)';
+function useWide(): boolean {
+  const [wide, setWide] = useState(() => window.matchMedia?.(WIDE).matches ?? false);
+  useEffect(() => {
+    const mq = window.matchMedia?.(WIDE);
+    if (!mq) return;
+    const on = () => setWide(mq.matches);
+    mq.addEventListener('change', on);
+    return () => mq.removeEventListener('change', on);
+  }, []);
+  return wide;
+}
 
 export function App() {
   const [credential, setCred] = useState<string | null>(getCredential());
@@ -25,38 +44,16 @@ export function App() {
     return () => { live = false; };
   }, []);
 
-  return (
-    <PhoneStage>
-      {!checked
-        ? <div className="center-screen" />
-        : !credential
-          ? <AuthGate onAuthed={({ token }) => { setCredential(token); setCred(token); }} />
-          : <Home credential={credential} onLogout={() => { clearCredential(); setCred(null); }} />}
-    </PhoneStage>
-  );
-}
-
-/**
- * On a phone this is just the screen. On a desktop it is a 390×844 frame — the product is
- * mobile-only by design, but a hard block made the real UI impossible to review on a laptop.
- */
-function PhoneStage({ children }: { children: ReactNode }) {
-  return (
-    <div className="desktop-stage">
-      <div className="desktop-note">
-        <h2>手机专用</h2>
-        <p>Claude Remote 是为手机做的。用手机浏览器打开 <code>{location.host}</code>，或把这个窗口调窄到手机尺寸。</p>
-        <p>右边是等比的手机画面，功能完全一致。</p>
-      </div>
-      <div className="phone-frame">{children}</div>
-    </div>
-  );
+  if (!checked) return <div className="center-screen" />;
+  if (!credential) return <AuthGate onAuthed={({ token }) => { setCredential(token); setCred(token); }} />;
+  return <Home credential={credential} onLogout={() => { clearCredential(); setCred(null); }} />;
 }
 
 function Home({ credential, onLogout }: { credential: string; onLogout: () => void }) {
   const [sessions, setSessions] = useState<SessionView[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [connection, setConnection] = useState<Connection>('connecting');
+  const wide = useWide();
   const sockRef = useRef<ControlSocket | null>(null);
   const eventCb = useRef<(sid: string, payload: any) => void>(() => {});
   const historyCb = useRef<(sid: string, events: any[]) => void>(() => {});
@@ -85,6 +82,20 @@ function Home({ credential, onLogout }: { credential: string; onLogout: () => vo
 
   const active = activeId ? sessions.find((s) => s.id === activeId) ?? null : null;
 
+  if (wide && sockRef.current) {
+    return (
+      <DesktopShell
+        sessions={sessions}
+        activeId={activeId}
+        connection={connection}
+        sock={sockRef.current}
+        onOpen={(s) => setActiveId(s.id)}
+        onLogout={onLogout}
+        registerEvent={(cb) => (eventCb.current = cb)}
+        registerHistory={(cb) => (historyCb.current = cb)}
+      />
+    );
+  }
   if (active && sockRef.current) {
     return (
       <ChatView

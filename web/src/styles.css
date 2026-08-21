@@ -116,37 +116,102 @@ textarea { font: inherit; }
 .clamp-3 { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
-/* ── desktop: a centred phone frame instead of a hard block, so the real UI is
-   reviewable on a laptop while still reading as "phone only". ── */
-.desktop-stage {
-  min-height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 28px;
-  padding: 24px;
-  background: #1b1b19;
-}
-.desktop-note { max-width: 260px; color: var(--text-3); font-size: 13px; line-height: 1.7; }
-.desktop-note h2 { margin: 0 0 8px; font-size: 16px; color: var(--text); }
-.desktop-note code { font-family: var(--mono); font-size: 12.5px; color: var(--text-2); }
-.phone-frame {
-  width: 390px;
-  height: min(844px, calc(100vh - 48px));
-  flex: none;
-  overflow: hidden;
-  border: 1px solid var(--line-2);
-  border-radius: 34px;
-  background: var(--surface);
-  box-shadow: 0 30px 80px rgba(0, 0, 0, .5);
-}
-@media (max-width: 820px) {
-  /* `height`, not just the inherited `min-height`: a percentage height resolves to `auto`
-     against an auto-height parent, so without this the frame grew with the transcript — the
-     app shell stopped being one viewport tall and the composer scrolled off the screen. */
-  .desktop-stage { display: block; height: 100%; padding: 0; background: var(--surface); }
-  .desktop-note { display: none; }
-  .phone-frame { width: 100%; height: 100%; border: none; border-radius: 0; box-shadow: none; }
+/* ── desktop shell (≥900px): a session rail beside one transcript ──
+   Everything here is inside the media query on purpose. The phone shell above is `position: fixed`
+   with `100dvh`/`100lvh` for reasons that only exist on iOS under `viewport-fit=cover`; a desktop
+   window has no safe-area insets and no retractable chrome, so it takes the simpler road — a grid
+   that fills the fixed root and lets each pane scroll on its own. */
+@media (min-width: 900px) {
+  .dshell {
+    height: 100%;
+    display: grid;
+    grid-template-columns: 288px minmax(0, 1fr);
+    background: var(--surface);
+  }
+
+  .sidebar {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;                      /* so .sidebar-scroll can actually shrink and scroll */
+    border-right: 1px solid var(--line);
+    background: #201f1d;                /* a shade back from the transcript, not a new colour */
+  }
+  /* One inset for the whole rail — 12px, the same as the cards below, so the title, the chips and
+     the rows share a left edge. The notify banner is deliberately NOT inset: it carries a
+     border-bottom and is full-bleed by design, so a margin would just make `width: 100%` overflow
+     it past the cards on both sides. */
+  .sidebar-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 12px 10px; }
+  .sidebar-head h1 { margin: 0; font: 600 19px/1.2 var(--sans); }
+  .sidebar-tools { display: flex; gap: 8px; }
+  .sidebar .chips { padding: 0 12px 10px; }
+  .sidebar .notify-banner { margin-bottom: 10px; }
+  .sidebar-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 0 12px 16px; }
+  /* The open session. A left edge rather than a fill: the approval badge is the only thing in this
+     rail allowed to use accent colour, and a filled row would outshout it. */
+  .session-card.current { background: var(--raised); box-shadow: inset 2px 0 0 var(--accent); }
+
+  /* min-height: 0 on BOTH the grid item and the flex child. A grid item's automatic minimum size
+     is its content, so without it .dmain grows past the row and takes the composer off the bottom
+     of the window — the same failure the phone shell hit, one layout system over. */
+  .dmain { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+  .dempty {
+    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 14px; color: var(--text-3); font-size: 14px;
+  }
+
+  .dchat { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  /* In flow, not floating: there is no status bar to share the strip with and nothing to frost. */
+  .dchat-head {
+    flex: none; display: flex; align-items: center; gap: 12px;
+    padding: 14px 20px; border-bottom: 1px solid var(--line);
+  }
+  .dchat-title { flex: 1; min-width: 0; }
+  .dchat-title .t1 { font: 600 14.5px/1.3 var(--sans); }
+  .dchat-title .t2 { font: 400 12.5px/1.4 var(--mono); color: var(--text-3); }
+  /* The popover anchors to this box. */
+  .dchat-head-actions { position: relative; flex: none; }
+
+  /* `.chat`'s top padding is clearance for the phone's FLOATING header (--header-h + 26px). This
+     header is in flow, so that space would be a hole at the top of the transcript. Restated rather
+     than overridden by specificity: both selectors are one class deep, and `.chat` comes later in
+     the file. */
+  .dchat-scroll { flex: 1; min-height: 0; padding: 20px 0 8px; align-items: center; }
+  /* The readable cap, applied to the items themselves so the DOM keeps the phone's shape. 78ch is
+     the long end of readable for this serif at 16px; past it the eye loses the line it was on. */
+  .dchat-scroll > *, .dchat-composer > * { width: 100%; max-width: 78ch; }
+  .dchat-composer { flex: none; padding: 0 20px 14px; display: flex; flex-direction: column; align-items: center; }
+
+  /* A pointer can hover, so a clickable row can say so before it is clicked. */
+  .tool-row.hoverable:not(:disabled):hover { background: var(--raised); }
+  .tool-row.hoverable:not(:disabled) { cursor: pointer; }
+  .tool-row.hoverable:disabled { cursor: default; }
+
+  /* ── centred modals, where the phone has bottom sheets ── */
+  .modal {
+    position: fixed; z-index: 60;
+    top: 50%; left: 50%; transform: translate(-50%, -50%);
+    max-width: calc(100vw - 48px); max-height: min(80vh, 720px);
+    display: flex; flex-direction: column;
+    background: var(--raised); border: 1px solid var(--line-2);
+    border-radius: 16px; box-shadow: 0 24px 70px rgba(0, 0, 0, .55);
+    overflow: hidden;
+    /* The sheet gets its breathing room from the drag handle (.sheet-grab); a modal has no handle,
+       so the padding it stood in for has to be stated. */
+    padding: 18px 0 16px;
+  }
+  .modal.tall { height: min(80vh, 720px); }
+  /* The sheet body classes are reused verbatim (render/surface-parts.tsx is shared), so the one
+     thing to restate is that the scroll region is the flexible one. */
+  .modal .sheet-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+
+  .popover {
+    position: absolute; z-index: 60; top: calc(100% + 8px); right: 0;
+    min-width: 260px; padding: 8px 0 4px;
+    background: var(--raised); border: 1px solid var(--line-2);
+    border-radius: 12px; box-shadow: 0 18px 50px rgba(0, 0, 0, .5);
+  }
+  .popover .menu-meta { padding: 6px 14px 10px; }
+  .popover-catch { position: fixed; inset: 0; z-index: 55; }
 }
 
 /* ── centred panels (auth gate) ── */
@@ -516,9 +581,6 @@ textarea { font: inherit; }
   /* spring in, 320ms (0c) */
   animation: cc-rise 320ms cubic-bezier(.18, .89, .32, 1.06) both;
 }
-/* inside the desktop phone frame the sheet is positioned by the frame, not the viewport */
-.phone-frame { position: relative; }
-.phone-frame .backdrop, .phone-frame .sheet { position: absolute; }
 @keyframes cc-rise { from { transform: translateY(100%) } to { transform: none } }
 .sheet.dragging { animation: none; transition: none; }
 .sheet-grab { flex: none; padding: 4px 0 10px; touch-action: none; }
