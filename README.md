@@ -60,6 +60,7 @@ on a fresh server means nobody can sign up at all. Point the CLI at it with
 |---|---|
 | [docs/INTERNALS.md](docs/INTERNALS.md) | injection, the control-plane, persistence, the CLI contract |
 | [docs/MOBILE-UI.md](docs/MOBILE-UI.md) | the phone UI, and what an installed iOS app actually measured |
+| [docs/DESKTOP-UI.md](docs/DESKTOP-UI.md) | the two-pane layout above 900px, and what the two platforms share |
 | [docs/EVENTS.md](docs/EVENTS.md) | the data-plane wire contract every client builds on |
 | [docs/HISTORY-EXPORT.md](docs/HISTORY-EXPORT.md) | exporting history out of a deployment, and auditing what the UI drops |
 

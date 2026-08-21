@@ -1,5 +1,6 @@
 # Mobile UI
 
+Below 900px. The two-pane desktop layout above it, and what the two share, is docs/DESKTOP-UI.md.
 
 The phone UI is built to the Anthropic Remote Control design spec: warm-dark surface (`#262624`),
 Source Serif 4 for assistant prose, JetBrains Mono for commands and output, 4pt grid, tool cards
@@ -105,7 +106,7 @@ next to it — a sheet with the three commands (`npm i -g control-claude-code` �
 The logout control is a door-with-arrow icon (a gear promised settings this screen does not have)
 and asks twice before it forgets the key.
 
-Verified by: `npm test` (112 tests, ~5s — reducer invariants against real captured shapes in
+Verified by: `npm test` (113 tests, ~5s — reducer invariants against real captured shapes in
 `test/fixtures/transcript-shapes.jsonl`, permission pass-through and digest derivation over a real
 socket, digest persistence across a restart, the shape column written and backfilled against a
 real PostgreSQL), `npm run e2e-interactive`, `npm run e2e-question`, and
