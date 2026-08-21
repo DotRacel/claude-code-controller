@@ -241,13 +241,56 @@ test('a post_turn_summary ends the turn when no result arrives', () => {
   assert.equal(only(s, 'tools')[0].calls[0].status, 'running');
   assert.deepEqual(only(s, 'status').map((i) => i.text), ['跑完了测试']);
 
-  // Not a latch: the next assistant message is a live turn again.
-  s = reduce(s, { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: '继续' }] } }, live);
+  // Not a latch: a later TOOL CALL is a live turn again. Trailing prose is not — the worker
+  // posts the turn's final text after the turn is over, and re-arming on it left the activity
+  // line saying 运行中 forever (see 'the final text lands after the result…' below).
+  s = reduce(s, { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: '收尾的文本' }] } }, live);
+  assert.equal(s.live.busy, false, 'trailing prose must not re-arm the turn');
+  s = reduce(s, { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't2', name: 'Bash', input: { command: 'ls' } }] } }, live);
   assert.equal(s.live.busy, true);
 
   // The backfill rule agrees with the reducer.
-  assert.equal(turnActiveIn([{ type: 'assistant' }, { type: 'system', subtype: 'post_turn_summary' }]), false);
-  assert.equal(turnActiveIn([{ type: 'system', subtype: 'post_turn_summary' }, { type: 'assistant' }]), true);
+  const toolMsg = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'x', name: 'Bash', input: {} }] } };
+  const textMsg = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: '结束语' }] } };
+  assert.equal(turnActiveIn([toolMsg, { type: 'system', subtype: 'post_turn_summary' }]), false);
+  assert.equal(turnActiveIn([{ type: 'system', subtype: 'post_turn_summary' }, toolMsg]), true);
+  assert.equal(turnActiveIn([{ type: 'system', subtype: 'post_turn_summary' }, textMsg]), false);
+});
+
+test('the final text lands after the result and must not restart the turn', () => {
+  // The exact live order captured from a real session (cse_a70a91d1…): the worker delivers the
+  // turn's final assistant text AFTER the result, same message id as the thinking that preceded
+  // it. Re-arming busy on it kept the activity line saying 运行中 while the session sat idle.
+  const live = { isHistory: false } as const;
+  const seq = [
+    { type: 'system', subtype: 'thinking_tokens', estimated_tokens: 40 },
+    { type: 'assistant', message: { role: 'assistant', id: 'msg_1', content: [{ type: 'thinking', thinking: '' }] } },
+    { type: 'result', subtype: 'success', is_error: false },
+    { type: 'assistant', message: { role: 'assistant', id: 'msg_1', content: [{ type: 'text', text: '修好了。' }] } },
+  ];
+  let s = localSend(initialState(), '修一下', false);
+  for (const p of seq) s = reduce(s, p, live);
+  assert.equal(s.live.busy, false, 'the trailing text re-armed the turn');
+  assert.equal(s.live.thinking, false);
+  assert.ok(only(s, 'prose').some((p) => p.text === '修好了。'), 'the trailing text must still render');
+  // …and reopening the session must agree: the stored history ends on that trailing text.
+  assert.equal(turnActiveIn([{ type: 'user', message: { role: 'user', content: '修一下' } }, ...seq]), false);
+});
+
+test('a result for one parallel call hands the activity line to its still-open sibling', () => {
+  const live = { isHistory: false } as const;
+  let s = localSend(initialState(), '并行跑', false);
+  s = reduce(s, { type: 'assistant', message: { role: 'assistant', content: [
+    { type: 'tool_use', id: 'pa', name: 'Read', input: { file_path: '/a' } },
+    { type: 'tool_use', id: 'pb', name: 'Bash', input: { command: 'sleep 5' } },
+  ] } }, live);
+  assert.equal(s.live.running?.name, 'Bash', 'the newest call is on display');
+  // The DISPLAYED call settles first: the line falls back to the sibling still running.
+  s = reduce(s, { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'pb', content: 'ok' }] } }, live);
+  assert.equal(s.live.running?.name, 'Read', 'a sibling was still running — the line must not go quiet');
+  // The last one settles: now nothing is open.
+  s = reduce(s, { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'pa', content: 'ok' }] } }, live);
+  assert.equal(s.live.running, undefined);
 });
 
 test('a successful turn leaves no marker at all', () => {
@@ -267,22 +310,22 @@ test('an optimistic web send is not rendered twice when the echo arrives', () =>
 });
 
 test('a queued follow-up is marked queued while the agent holds the turn', () => {
-  let s = initialState();
-  s = reduce(s, { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: '在做了' }] } }, { isHistory: false });
+  // A turn is armed by the user message that started it (text-only assistant prose never arms
+  // one — the worker posts the final text after the turn is over).
+  let s = reduce(initialState(), { type: 'user', isReplay: true, message: { role: 'user', content: '先干着' } }, { isHistory: false });
   assert.equal(s.live.busy, true);
   s = localSend(s, '再补一句', s.live.busy);
-  assert.equal(only(s, 'user')[0].state, 'queued');
+  assert.equal(only(s, 'user')[1].state, 'queued');
 });
 
 test('a queued bubble settles once the worker echoes that turn back', () => {
-  let s = initialState();
-  s = reduce(s, { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: '在做了' }] } }, { isHistory: false });
+  let s = reduce(initialState(), { type: 'user', isReplay: true, message: { role: 'user', content: '先干着' } }, { isHistory: false });
   s = localSend(s, '再补一句', s.live.busy);
-  assert.equal(only(s, 'user')[0].state, 'queued');
+  assert.equal(only(s, 'user')[1].state, 'queued');
   // The echo is the agent saying it has taken the turn — the bubble stops being queued, and
   // is still not duplicated.
   s = reduce(s, { type: 'user', isReplay: true, message: { role: 'user', content: '再补一句' } }, { isHistory: false });
-  assert.deepEqual(only(s, 'user').map((u) => [u.text, u.state]), [['再补一句', 'sent']]);
+  assert.deepEqual(only(s, 'user').map((u) => [u.text, u.state]), [['先干着', 'sent'], ['再补一句', 'sent']]);
 });
 
 test('identical queued texts settle oldest-first, one echo at a time', () => {

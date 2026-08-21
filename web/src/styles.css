@@ -176,9 +176,12 @@ textarea { font: inherit; }
      than overridden by specificity: both selectors are one class deep, and `.chat` comes later in
      the file. */
   .dchat-scroll { flex: 1; min-height: 0; padding: 20px 0 8px; align-items: center; }
-  /* The readable cap, applied to the items themselves so the DOM keeps the phone's shape. 78ch is
-     the long end of readable for this serif at 16px; past it the eye loses the line it was on. */
-  .dchat-scroll > *, .dchat-composer > * { width: 100%; max-width: 78ch; }
+  /* The readable cap, applied to the items themselves so the DOM keeps the phone's shape. A FIXED
+     length, not `ch`: `ch` resolves against each item's OWN font, so serif prose (17.5px) and a
+     sans tool card (16px) capped at "78ch" came out ~30px apart and their left edges did not line
+     up down the column. 45rem (~720px) is the long end of readable for the serif prose that
+     dominates the transcript, and now every item shares one measure and one edge. */
+  .dchat-scroll > *, .dchat-composer > * { width: 100%; max-width: 45rem; }
   .dchat-composer { flex: none; padding: 0 20px 14px; display: flex; flex-direction: column; align-items: center; }
 
   /* A pointer can hover, so a clickable row can say so before it is clicked. */
@@ -361,10 +364,6 @@ textarea { font: inherit; }
 .dot.on { background: var(--ok); }
 .dot.off { background: var(--muted); }
 .dot.run { background: var(--accent); }
-/* "work is happening, but it isn't reasoning" — the activity line's alternative to the thinking
-   glyph. Breathing rather than spinning, so it never reads as the CLI's thinking animation. */
-.dot.pulse { animation: cc-pulse 1.4s ease-in-out infinite; }
-@keyframes cc-pulse { 0%, 100% { opacity: 1 } 50% { opacity: .3 } }
 
 /* ── chips ── */
 .chips { flex: none; display: flex; gap: 8px; padding: 0 20px 8px; }
@@ -402,8 +401,13 @@ textarea { font: inherit; }
    so once the transcript overflowed they were shrunk to their 2px borders. Nothing in a
    scrolling column may shrink. */
 .chat > *, .session-list > * { flex: none; }
+/* No `align-self` here on purpose. On the phone the transcript column is `align-items: stretch`
+   (flex's default), so the bubble fills the width with no help. On desktop the column is
+   `align-items: center` and the bubble must centre with everything else — an explicit
+   `align-self: stretch` used to override that and pin the bubble to the left, out of line with the
+   centred prose and tool cards beside it. */
 .bubble-user {
-  align-self: stretch; background: var(--bubble); border-radius: var(--radius-bubble);
+  background: var(--bubble); border-radius: var(--radius-bubble);
   padding: 14px 16px; font: 400 16px/1.4 var(--sans); white-space: pre-wrap; word-break: break-all;
 }
 /* Waiting on the agent to take the turn — grey italic, the same shape the CLI uses for a queued
@@ -504,7 +508,7 @@ textarea { font: inherit; }
 
 /* activity line while the agent holds the turn (1c) */
 .activity { display: flex; align-items: center; gap: 9px; font: 400 13px/1.4 var(--mono); color: var(--accent); }
-/* the glyph itself changes (ChatView's ThinkingSpinner), so the box is fixed at 1ch and the line
+/* the glyph itself changes (parts.tsx's StarSpinner), so the box is fixed at 1ch and the line
    never reflows as the frames swap */
 .activity .spin { width: 1ch; flex: none; text-align: center; }
 
@@ -705,7 +709,7 @@ textarea { font: inherit; }
   .enter, .sheet, .backdrop, .to-bottom { animation-duration: 80ms; animation-timing-function: linear; }
   .sheet { animation-name: cc-fade; }
   .to-bottom { animation-name: cc-fade; }
-  .caret, .spinner, .dot.pulse { animation: none; }
+  .caret, .spinner { animation: none; }
   .send { transition: none; }
   .tool-row.press { transform: none; }
 }

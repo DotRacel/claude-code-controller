@@ -100,7 +100,7 @@ export interface Live {
   thinking?: boolean;
   thinkingTokens?: number;
   /** The tool currently held open, for the activity line under the transcript. */
-  running?: { name: string; arg: string; since: number };
+  running?: { toolUseId: string; name: string; arg: string; since: number };
   permission?: PermissionRequest;
   model?: string;
   permissionMode?: string;
@@ -344,8 +344,9 @@ function system(d: Draft, p: any): TranscriptState {
     case 'post_turn_summary':
       // Named for when it is emitted: the turn is over. `result` normally says so, but it is not
       // guaranteed to arrive (a dropped worker, a bridge that stops relaying), and a turn whose
-      // end is never announced would leave the activity line spinning for good. A later assistant
-      // message legitimately flips `busy` back on, so this is a floor, not a latch.
+      // end is never announced would leave the activity line spinning for good. A later tool call
+      // or user turn legitimately flips `busy` back on, so this is a floor, not a latch — but
+      // trailing prose does not (the worker posts the final text after the turn is over).
       idle(d);
       if (typeof p.status_detail === 'string' && p.status_detail.trim()) push(d, { kind: 'status', text: p.status_detail.trim() });
       return d;
@@ -442,7 +443,11 @@ function system(d: Draft, p: any): TranscriptState {
 function assistant(d: Draft, p: any, ts: number | undefined, isHistory: boolean): TranscriptState {
   const content = p.message?.content;
   if (!Array.isArray(content)) return d;
-  if (!isHistory) d.live.busy = true;
+  // Only a tool_use (below) may arm `busy`. The worker delivers the turn's FINAL text after the
+  // `result` (observed live: assistant[thinking] → result → assistant[text], same message id), so
+  // a text-only message arriving while idle is a turn that already ended, not one starting — and
+  // arming here left the activity line saying 运行中 forever. Same rule as the server's digest
+  // (src/server/store.ts foldDigest), which never had this bug.
   // A block type nobody handles (`redacted_thinking`, say) is counted but NOT marked in the
   // transcript: the message it arrived in did render, so a marker would claim a gap where there
   // is only a missing detail. The count is what puts it in the backlog.
@@ -468,13 +473,14 @@ function assistant(d: Draft, p: any, ts: number | undefined, isHistory: boolean)
       if (b.name === QUESTION_TOOL) continue; // rendered as a question card from its permission request
       const toolUseId = String(b.id ?? '');
       if (!toolUseId) continue;
+      if (!isHistory) d.live.busy = true;
       if (TODO_TOOLS.has(b.name)) {
         applyTodoTool(d, { toolUseId, name: b.name, input: b.input });
         d.index[toolUseId] = { i: -1, j: -1 }; // known but not a tool card
         continue;
       }
       addToolCall(d, { toolUseId, name: String(b.name ?? 'Tool'), input: b.input, status: 'running', startedAt: ts });
-      d.live.running = { name: String(b.name ?? 'Tool'), arg: toolArg(b.name, b.input), since: ts ?? Date.now() };
+      d.live.running = { toolUseId, name: String(b.name ?? 'Tool'), arg: toolArg(b.name, b.input), since: ts ?? Date.now() };
     }
   }
   return d;
@@ -524,7 +530,20 @@ function user(d: Draft, p: any, ts: number | undefined, isHistory: boolean): Tra
         status: b.is_error ? 'error' : 'ok', result: body, endedAt: ts,
         ...(images.length ? { images } : {}),
       });
-      if (call && d.live.running && call.toolUseId === id) d.live.running = undefined;
+      // The line tracks one call. Parallel calls settle in any order, so a result for the one on
+      // display hands the line to whichever call in the same group is still open — clearing it
+      // outright said 运行中 while a sibling was genuinely running. A result for a call NOT on
+      // display changes nothing: the display already points at newer work.
+      const shown = d.live.running;
+      if (call && at && shown && shown.toolUseId === id) {
+        const group = d.items[at.i];
+        const open = group.kind === 'tools'
+          ? [...group.calls].reverse().find((c) => c.status === 'running' || c.status === 'awaiting')
+          : undefined;
+        d.live.running = open
+          ? { toolUseId: open.toolUseId, name: open.name, arg: toolArg(open.name, open.input), since: open.startedAt ?? shown.since }
+          : undefined;
+      }
     }
   }
   return d;
@@ -687,9 +706,14 @@ export function clearPermission(state: TranscriptState): TranscriptState {
  * Scanning backwards for the last turn boundary is the same rule the server folds into the session
  * digest (src/server/store.ts, foldDigest): `result` — or a `post_turn_summary`, which is emitted
  * once the turn is over and covers the case where no `result` ever arrives — ends a turn, a user
- * or assistant message starts or continues one, everything else is neutral. `worker_shutting_down`
+ * message or a tool call starts or continues one, everything else is neutral. `worker_shutting_down`
  * and `conversation_reset` end it too: the child that owed us a result is gone, or has moved on to
  * a new conversation, and either way reopening the session must not show a Stop button.
+ *
+ * A text- or thinking-only assistant message is NEUTRAL, not activity: the worker delivers the
+ * turn's final text AFTER the `result`, so most stored turns literally end on trailing prose —
+ * counting it as in-flight made every reopened session show a Stop button. Mid-turn it costs
+ * nothing: the scan just keeps going until it hits the user message that started the turn.
  */
 export function turnActiveIn(payloads: unknown[]): boolean {
   for (let i = payloads.length - 1; i >= 0; i--) {
@@ -697,7 +721,11 @@ export function turnActiveIn(payloads: unknown[]): boolean {
     const t = p?.type;
     if (t === 'result' || t === 'conversation_reset') return false;
     if (t === 'system' && (p?.subtype === 'post_turn_summary' || p?.subtype === 'worker_shutting_down')) return false;
-    if (t === 'user' || t === 'assistant' || t === 'stream_event') return true;
+    if (t === 'user' || t === 'stream_event') return true;
+    if (t === 'assistant') {
+      const content = p?.message?.content;
+      if (Array.isArray(content) && content.some((b: any) => b?.type === 'tool_use')) return true;
+    }
   }
   return false;
 }

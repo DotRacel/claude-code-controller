@@ -99,9 +99,10 @@ function ImageAttachmentView({ att, url }: { att: ImageAttachment; url: string |
 }
 
 /**
- * One line under the transcript for as long as the agent holds the turn. The leading glyph is
- * chosen by what the agent is *actually* doing, not merely by `busy`: the thinking star is the
- * CLI's reasoning animation and would be a lie while a tool runs or prose streams in.
+ * One line under the transcript for as long as the agent holds the turn. The glyph is ALWAYS the
+ * CLI's star spinner (StarSpinner below — the Anthropic one, kept by explicit request; do not
+ * swap it for a plainer dot). What the agent is *actually* doing is the TEXT's job: the open tool
+ * with its runtime, 思考中 with a token count, or a bare 运行中 between steps.
  */
 export function ActivityLine({ running, thinking, tokens }: {
   running?: { name: string; arg: string; since: number };
@@ -121,7 +122,7 @@ export function ActivityLine({ running, thinking, tokens }: {
     const arg = running.arg ? ` · ${running.arg.split('\n')[0].slice(0, 40)}` : '';
     return (
       <div className="activity">
-        <span className="dot run pulse" aria-hidden="true" />
+        <StarSpinner />
         {`${toolDisplayName(running.name)}${arg} · ${dur}`}
       </div>
     );
@@ -129,21 +130,20 @@ export function ActivityLine({ running, thinking, tokens }: {
   if (thinking) {
     return (
       <div className="activity">
-        <ThinkingSpinner />
+        <StarSpinner />
         {tokens ? `思考中 · ${tokens} tokens` : '思考中'}
       </div>
     );
   }
-  // Working, but neither reasoning nor inside a tool — streaming prose, or between steps. A quiet
-  // pulse says "still going" without claiming which.
-  return <div className="activity"><span className="dot run pulse" aria-hidden="true" />运行中</div>;
+  // Working, but neither reasoning nor inside a tool — streaming prose, or between steps.
+  return <div className="activity"><StarSpinner />运行中</div>;
 }
 
-/** The CLI's own thinking glyph: it grows to a full star and shrinks back, one frame at a time. */
+/** The CLI's own activity glyph: it grows to a full star and shrinks back, one frame at a time. */
 const FRAMES = ['·', '✢', '✳', '✶', '✻', '✽'];
 const SPINNER_MS = 120;
 
-function ThinkingSpinner() {
+function StarSpinner() {
   const [i, setI] = useState(0);
   const dir = useRef(1);
 

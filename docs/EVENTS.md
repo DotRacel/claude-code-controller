@@ -130,6 +130,12 @@ screenshot. The server strips the duplicated image on the way to a browser.
 `subtype`: `success` | `error` (and specific errors like `tool_deferred*`). Signals the turn is
 done; `result` is the final assistant text.
 
+**The turn's final `assistant` text message can arrive AFTER the `result`** (observed live on
+2.1.237: `assistant[thinking]` → `result` → `assistant[text]`, same `message.id`). A client that
+re-arms its "turn in flight" state on any assistant message will show a busy indicator forever —
+only a `user` turn or a `tool_use` block genuinely (re)starts a turn (web/src/model.ts,
+src/server/store.ts foldDigest agree on this rule).
+
 ### `control_request` (child→host) — the worker asks us ✓
 ```json
 { "type": "control_request", "request_id": "…",
