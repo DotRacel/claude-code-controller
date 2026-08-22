@@ -53,9 +53,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # QEMU is only here for the arm64 build (self-hosters on a Pi or an ARM VPS). It emulates,
-      # so that leg is slow — drop linux/arm64 below if the wait stops being worth it.
-      - uses: docker/setup-qemu-action@v3
+      # amd64 only. arm64 used to ship for self-hosters on a Pi or an ARM VPS, but it had to be
+      # emulated through QEMU and that leg dominated the whole release — so it is gone, along with
+      # the setup-qemu-action that existed solely to enable it. Anyone on ARM can still build the
+      # image locally from this repo (`docker compose up --build`). buildx stays: build-push-action
+      # needs it for the gha cache and the push.
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
@@ -95,12 +97,12 @@ jobs:
           done
           echo "server did not come up in 30s"; docker logs ccc-probe; exit 1
 
-      # Only now push, and for both architectures. The amd64 layers come straight out of the cache
-      # the probe build just wrote, so this leg mostly costs the emulated arm64 build.
+      # Only now push. Every layer comes straight out of the cache the probe build just wrote, so
+      # this leg is nearly free — the image that gets pushed is the one that was proven to boot.
       - uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
