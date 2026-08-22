@@ -33,7 +33,9 @@ test('the fixture still covers every shape the reducer branches on', () => {
     'system:background_tasks_changed', 'system:post_turn_summary',
     // shapes a real export proved the reducer was dropping (docs/HISTORY-EXPORT.md)
     'system:task_progress', 'system:task_updated', 'system:vcs_state_changed',
-    'system:worker_shutting_down', 'conversation_reset', 'control_cancel_request']) {
+    'system:worker_shutting_down', 'conversation_reset', 'control_cancel_request',
+    // and the three a 13846-event production census proved were undecided (npm run shape-report)
+    'system:status', 'system:compact_boundary', 'rate_limit_event']) {
     assert.ok(seen.has(want), `fixture lost coverage of ${want}`);
   }
 });
@@ -528,6 +530,62 @@ test('a commit or a push is worth one status line', () => {
   assert.equal(only(pushed, 'status')[0].text, '已推送 · main');
   const nameless = reduce(initialState(), { type: 'system', subtype: 'vcs_state_changed' });
   assert.equal(only(nameless, 'status').length, 0, 'a kindless event says nothing worth a line');
+});
+
+// ── shapes a 13846-event production census proved were undecided (npm run shape-report) ──
+
+test('a compaction reports while it runs and leaves one divider with the numbers', () => {
+  // The stretch matters: the sampled compactions took up to 228s, during which no tool is open and
+  // the model is not reasoning, so `compacting` is the only thing that can explain the wait.
+  let s = reduce(initialState(), { type: 'system', subtype: 'status', status: 'compacting' });
+  assert.equal(s.live.compacting, true);
+  assert.deepEqual(kinds(s), [], 'a transient flag, not a transcript line');
+
+  s = reduce(s, { type: 'system', subtype: 'status', status: null, compact_result: 'success' });
+  assert.equal(s.live.compacting, false, 'the spinner has to stop when it lands');
+  assert.deepEqual(kinds(s), [], 'the boundary carries the news, so a success says nothing twice');
+
+  s = reduce(s, { type: 'system', subtype: 'compact_boundary',
+    compact_metadata: { trigger: 'auto', pre_tokens: 167265, post_tokens: 25515 } });
+  assert.equal(only(s, 'divider')[0].label, '上下文已压缩 · 自动 · 167k → 26k');
+  assert.equal(s.unhandled['system:status'], undefined, 'and none of it counts as backlog');
+});
+
+test('a compaction that fails is not silent, and a lost completion cannot wedge the spinner', () => {
+  const failed = reduceAll([
+    { type: 'system', subtype: 'status', status: 'compacting' },
+    { type: 'system', subtype: 'status', status: null, compact_result: 'context_overflow' },
+  ], { isHistory: true });
+  assert.equal(failed.live.compacting, false);
+  assert.equal(only(failed, 'error')[0].detail, 'context_overflow', 'a non-success has to surface');
+
+  // idle() owns every live flag the activity line reads, so anything that ends a turn clears it —
+  // otherwise a compaction whose completion never arrived spins for the rest of the session.
+  const wedged = reduceAll([
+    { type: 'system', subtype: 'status', status: 'compacting' },
+    { type: 'result', subtype: 'success' },
+  ], { isHistory: true });
+  assert.equal(wedged.live.compacting, false);
+});
+
+test('a status notice nobody has looked at still reaches the backlog', () => {
+  // `system:status` is a generic notice subtype; declaring it handled must not swallow the rest.
+  const s = reduce(initialState(), { type: 'system', subtype: 'status', status: 'reticulating_splines' });
+  assert.deepEqual(s.unhandled, { 'system:status:reticulating_splines': 1 });
+  assert.equal(only(s, 'unknown')[0].shape, 'system:status:reticulating_splines');
+});
+
+test('a quota event is quiet while it is allowed, and speaks when it is not', () => {
+  const allowed = { status: 'allowed', rateLimitType: 'five_hour', resetsAt: 1787334600 };
+  const quiet = reduce(initialState(), { type: 'rate_limit_event', rate_limit_info: allowed });
+  assert.deepEqual(kinds(quiet), [], 'a request that went through must not grow a 额度受限 line');
+  assert.deepEqual(quiet.unhandled, {}, 'quiet by decision, not by omission');
+
+  const hit = reduce(initialState(), { type: 'rate_limit_event',
+    rate_limit_info: { ...allowed, status: 'exceeded' } });
+  const line = only(hit, 'status')[0];
+  assert.ok(line, 'a real limit is why the session stopped — it has to be visible');
+  assert.ok(line.text.includes('5 小时额度') && line.text.includes('exceeded'), line?.text);
 });
 
 test('a payload carries the image twice, and both copies are stripped', () => {

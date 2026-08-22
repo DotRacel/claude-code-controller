@@ -99,6 +99,14 @@ export interface Live {
    */
   thinking?: boolean;
   thinkingTokens?: number;
+  /**
+   * Is the worker compacting the context right now? Neither `busy` nor `thinking` covers it: no
+   * tool is held open and the model is not reasoning, yet compaction runs for minutes (228s at the
+   * top of the sampled range), and the activity line would otherwise say only 运行中 for all of it.
+   * Set by `system:status`, cleared by its `compact_result` — and by idle(), so no lost completion
+   * can leave it stuck on.
+   */
+  compacting?: boolean;
   /** The tool currently held open, for the activity line under the transcript. */
   running?: { toolUseId: string; name: string; arg: string; since: number };
   permission?: PermissionRequest;
@@ -140,6 +148,9 @@ export const initialState = (): TranscriptState => ({
 
 /** A non-empty string, or undefined — for payload fields that are sometimes present and empty. */
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v : undefined);
+
+/** 167265 → "167k". Compaction counts are six figures, where the exact digits are noise. */
+const ktok = (n: number): string => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(Math.round(n)));
 
 const timeOf = (p: any): number | undefined => {
   const t = p?.timestamp;
@@ -296,6 +307,7 @@ export function reduce(state: TranscriptState, payload: any, opts: { isHistory: 
     case 'stream_event': return streamEvent(d, payload, opts.isHistory);
     case 'control_cancel_request': return controlCancel(d, payload);
     case 'conversation_reset': return conversationReset(d);
+    case 'rate_limit_event': return rateLimit(d, payload);
     // Unreachable while SHAPES and this switch agree, which a test enforces. If they ever drift,
     // failing closed here (as an undecided shape) beats rendering nothing.
     default: return markUnknown(d, shape);
@@ -350,6 +362,44 @@ function system(d: Draft, p: any): TranscriptState {
       idle(d);
       if (typeof p.status_detail === 'string' && p.status_detail.trim()) push(d, { kind: 'status', text: p.status_detail.trim() });
       return d;
+    case 'status': {
+      // A generic "surfaced notice" in the protocol whose only observed use is compaction, as a
+      // pair: `status:'compacting'` when it starts, then `compact_result` when it lands (26 of each
+      // in the sampled history, never anything else). The start is worth a live flag because that
+      // stretch is otherwise unmarked; the success is not worth a transcript line because
+      // `compact_boundary` follows with the actual numbers.
+      // `busy` is deliberately NOT set here: system() cannot see opts.isHistory, and a backfill
+      // must never flip it (the view re-derives it with turnActiveIn). It does not need to — every
+      // sampled compaction had `trigger:'auto'`, which fires mid-turn, so the turn is already busy.
+      if (p.status === 'compacting') {
+        d.live.compacting = true;
+        return d;
+      }
+      const done = str(p.compact_result);
+      if (done) {
+        d.live.compacting = false;
+        if (done !== 'success') push(d, { kind: 'error', title: '压缩失败', detail: done });
+        return d;
+      }
+      // Any other notice under this subtype. Declaring `system:status` handled must not silently
+      // become a wildcard for notices nobody has looked at, so this still reaches the backlog —
+      // qualified by the value, which is what a future reader needs in order to decide.
+      return markUnknown(d, `system:status:${str(p.status) ?? '?'}`);
+    }
+    case 'compact_boundary': {
+      // A real break in what the model can still see, so it earns the same divider as /clear. The
+      // envelope's `historical` flag is deliberately not read: it marks a replayed event in general
+      // (user and assistant events carry it too), and replay is the caller's business via
+      // opts.isHistory — every other branch here ignores it for the same reason.
+      const m = p.compact_metadata ?? {};
+      const pre = Number(m.pre_tokens);
+      const post = Number(m.post_tokens);
+      const size = Number.isFinite(pre) && Number.isFinite(post) ? ` · ${ktok(pre)} → ${ktok(post)}` : '';
+      const why = m.trigger === 'manual' ? ' · 手动' : m.trigger === 'auto' ? ' · 自动' : '';
+      d.live.compacting = false;
+      push(d, { kind: 'divider', label: `上下文已压缩${why}${size}` });
+      return d;
+    }
     case 'task_started': {
       const taskId = String(p.task_id ?? '');
       if (!taskId || d.items.some((i) => i.kind === 'bgtask' && i.taskId === taskId)) return d;
@@ -559,6 +609,7 @@ function idle(d: Draft): void {
   d.live.running = undefined;
   d.live.thinking = false;
   d.live.thinkingTokens = undefined;
+  d.live.compacting = false;
 }
 
 /** Wind the turn down: nothing, live or rendered, may keep claiming to be in flight. */
@@ -643,6 +694,29 @@ function conversationReset(d: Draft): TranscriptState {
   endTurn(d);
   d.todos = [];
   push(d, { kind: 'divider', label: '对话已重置' });
+  return d;
+}
+
+/**
+ * Quota telemetry from the worker. Every sampled event said `status:'allowed'` — it reports the
+ * five-hour window's state, not a refusal — so the benign case is deliberately silent: a "额度受限"
+ * line above a request that went through would be a false alarm, and there were two of these in
+ * 13846 events. Any other status is the one worth showing, because a limit that stops the session
+ * has to be visible; it renders as a notice rather than an error card because none of the other
+ * status values have been seen, and over-escalating an unknown enum is the worse mistake.
+ *
+ * `resetsAt` is in SECONDS (1787334600 → 2026-08-21 17:50Z), so it needs ×1000 to be a Date.
+ */
+function rateLimit(d: Draft, p: any): TranscriptState {
+  const info = p.rate_limit_info ?? {};
+  const status = str(info.status);
+  if (!status || status === 'allowed') return d;
+  const at = Number(info.resetsAt);
+  const when = Number.isFinite(at) && at > 0
+    ? ` · ${new Date(at * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })} 重置`
+    : '';
+  const window = str(info.rateLimitType) === 'five_hour' ? '5 小时额度' : str(info.rateLimitType) ?? '额度';
+  push(d, { kind: 'status', text: `${window} · ${status}${when}` });
   return d;
 }
 

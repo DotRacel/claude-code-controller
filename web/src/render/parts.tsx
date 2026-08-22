@@ -104,10 +104,11 @@ function ImageAttachmentView({ att, url }: { att: ImageAttachment; url: string |
  * swap it for a plainer dot). What the agent is *actually* doing is the TEXT's job: the open tool
  * with its runtime, 思考中 with a token count, or a bare 运行中 between steps.
  */
-export function ActivityLine({ running, thinking, tokens }: {
+export function ActivityLine({ running, thinking, tokens, compacting }: {
   running?: { name: string; arg: string; since: number };
   thinking?: boolean;
   tokens?: number;
+  compacting?: boolean;
 }) {
   const [, tick] = useState(0);
   useEffect(() => {
@@ -116,6 +117,10 @@ export function ActivityLine({ running, thinking, tokens }: {
     return () => clearInterval(t);
   }, [running?.since]);
 
+  // First, because it is the one state that explains a multi-minute stall: while the worker
+  // compacts, no tool is open and the model is not reasoning, so every other branch here would
+  // either say nothing useful or describe something that already finished.
+  if (compacting) return <div className="activity"><StarSpinner />正在压缩上下文…</div>;
   if (running) {
     const s = Math.max(0, Math.round((Date.now() - running.since) / 1000));
     const dur = s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;

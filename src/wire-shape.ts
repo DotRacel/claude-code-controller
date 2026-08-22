@@ -73,6 +73,13 @@ export const SHAPES: Record<string, ShapeRule> = {
   'system:init': { verdict: 'handled' },
   'system:thinking_tokens': { verdict: 'handled' },
   'system:post_turn_summary': { verdict: 'handled' },
+  // Compaction, which arrives as three events: `status:'compacting'` when it starts, a
+  // `status` carrying `compact_result` when it lands, and `compact_boundary` with the token
+  // numbers. `status` is a generic "surfaced notice" subtype in the protocol — compaction is
+  // merely the only use of it seen so far, so the reducer files an unrecognised notice as
+  // backlog rather than treating this rule as a wildcard for all of them.
+  'system:status': { verdict: 'handled' },
+  'system:compact_boundary': { verdict: 'handled' },
   'system:task_started': { verdict: 'handled' },
   'system:task_progress': { verdict: 'handled' },
   'system:task_updated': { verdict: 'handled' },
@@ -127,6 +134,12 @@ export const SHAPES: Record<string, ShapeRule> = {
   'stream_event:ping': { verdict: 'ignored', why: 'keep-alive inside the stream' },
 
   keep_alive: { verdict: 'ignored', why: 'idle heartbeat from the worker' },
+
+  // Quota telemetry, not a refusal: every sampled event carried `status:'allowed'` and reported
+  // the five-hour window's reset time. Handled rather than ignored because a REAL limit would
+  // arrive as this same shape, and that is not something to swallow — the reducer stays quiet
+  // for the benign status and surfaces any other one.
+  rate_limit_event: { verdict: 'handled' },
 };
 
 /**

@@ -74,13 +74,27 @@ decides ownership.
   workflow reports **only** through `task_progress` (a card with no progress is a spinner for
   minutes), and `task_updated` can be the **only** event that says a task finished.
 - `thinking` ○ · `thinking_tokens` ✓ (`{estimated_tokens, estimated_tokens_delta}`) — reasoning progress.
-- `notification` ○ · `os_notification` ○ · `informational` ○ · `status` ○ — surfaced notices.
+- `notification` ○ · `os_notification` ○ · `informational` ○ — surfaced notices.
+- `status` ✓ — the same notices group, but the only use observed on the wire is compaction, as a
+  pair: `{status:"compacting"}` when it starts, then `{status:null, compact_result:"success"}` when
+  it lands (26 of each in a 13846-event census, never another value). The start is worth showing —
+  compaction runs for **minutes** (228s at the top of the sampled range) with no tool open and no
+  reasoning, so nothing else accounts for the wait. Because the subtype is generic, a client must
+  not treat "handled" as a wildcard here: an unrecognised notice belongs in the backlog.
 - `api_error` ○ · `api_retry` ○ · `permission_denied` ○ · `permission_retry` ○ — error/retry.
 - `vcs_state_changed` ✓ — `{kind:"commit"|"push", branch, cwd}`; emitted after the agent commits
   or pushes. The one side effect a reader cannot undo by reading further, so it is worth a line.
 - `worker_shutting_down` ✓ — `{reason:"host_exit"}`; the terminal-side claude is going away. No
   `result` is coming, so anything still claiming to be in flight has to be wound down.
-- `compact_boundary` ○ · `compact_start`/`compact_progress`/`compact_end` ○ — context compaction.
+- `compact_boundary` ✓ · `compact_start`/`compact_progress`/`compact_end` ○ — context compaction.
+  `{compact_metadata:{trigger:"auto"|"manual", pre_tokens, post_tokens, duration_ms,
+  cumulative_dropped_tokens, preserved_messages:{anchor_uuid, uuids:[…], all_uuids:[…]},
+  preserved_segment:{anchor_uuid, head_uuid, tail_uuid}}}`. A hard break in what the model can
+  still see, so it earns the same treatment as `conversation_reset`; `pre_tokens → post_tokens`
+  (167k → 26k in the sampled runs) is the part worth putting on screen, and the two `preserved_*`
+  objects are uuid bookkeeping with nothing renderable in them. Arrives AFTER the `status` pair
+  above, so a client that renders both must not announce the same compaction twice. The envelope's
+  `historical` flag is not compaction-specific — replayed `user`/`assistant` events carry it too.
 - `memory_recall` ○ · `memory_saved` ○ — memory ops.
 - `hook_started`/`hook_progress`/`hook_response`/`stop_hook_summary` ○ — hooks.
 - `model_fallback` ○ · `model_refusal_fallback`/`model_refusal_no_fallback` ○ ·
@@ -165,6 +179,20 @@ would reject.
 The same session continues under a new conversation. The turns above it are history, not context:
 render a break, drop the task list, and treat the turn as over.
 
+### `rate_limit_event` ✓ — quota telemetry, not a refusal
+```json
+{ "type": "rate_limit_event", "session_id": "cse_…", "uuid": "…",
+  "rate_limit_info": { "status": "allowed", "rateLimitType": "five_hour",
+    "resetsAt": 1787334600, "isUsingOverage": false,
+    "overageStatus": "rejected", "overageDisabledReason": "org_level_disabled" } }
+```
+Not in `sdk-control-protocol-schemas.js` at all — it turned up on the wire first (2 events in a
+13846-event census, both `status:"allowed"`). **`resetsAt` is in SECONDS**, not milliseconds, so it
+needs ×1000 before it is a JS `Date`. `status:"allowed"` means the request went through: rendering
+a limit warning on it is a false alarm, so the benign case should say nothing. Any other status is
+worth surfacing — a limit that stalls the session is exactly what a user needs told — but no other
+value has been observed, so treat the enum as open.
+
 ### `keep_alive` ○ — idle heartbeat from the worker; ignore.
 
 ---
@@ -194,8 +222,12 @@ An auto-approved tool (safe, in-workdir) skips steps 2–3. A `deny` short-circu
 - **Status chips**: `system:post_turn_summary`, `system:task_*`, `system:thinking_tokens`,
   `system:api_error`/`permission_denied`.
 - **Session bootstrap**: `system:init` → tool list, model, permission mode.
-- **Ignore**: `keep_alive`, our own `control_response` echoed back, unknown `system:*` (log, don't
-  break) — treat unrecognized subtypes as forward-compatible no-ops. `test/history-audit.ts`
-  reports which shapes a client is silently dropping (docs/HISTORY-EXPORT.md).
+- **Ignore**: `keep_alive` and our own `control_response` echoed back — declared noise, dropped for
+  free. An unrecognised `system:*` must NOT break the transcript, but "forward-compatible no-op" is
+  the wrong reflex: a shape nobody has decided about is indistinguishable from one deliberately
+  dropped, which is how shapes go missing for months. `src/wire-shape.ts` makes the decision
+  explicit (handled / ignored-with-a-reason / unknown) and `npm run shape-report` reads the backlog
+  straight out of `events.shape` — one aggregate query, no conversation content. `test/history-audit.ts`
+  answers the same question but needs a full history export first (docs/HISTORY-EXPORT.md).
 - **Controls the web can send**: `user` (with `client_platform`), `control_response`,
   and host `control_request` (`interrupt`, `set_permission_mode`, `set_model`).
